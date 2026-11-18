@@ -21,6 +21,40 @@ enum class SortMode(val label: String) {
     ORIGIN("Source"),
 }
 
+enum class ConfidenceFilter(val label: String) {
+    ALL("All"),
+    STRONG("Strong"),
+    LIKELY("Likely"),
+    FRAGMENT("Fragments"),
+    ;
+
+    fun matches(confidence: Int): Boolean = when (this) {
+        ALL -> true
+        STRONG -> confidence >= 82
+        LIKELY -> confidence in 55..81
+        FRAGMENT -> confidence < 55
+    }
+}
+
+enum class ActivityType(val label: String) {
+    SCAN("Deep scan"),
+    TRASH("Trash scan"),
+    CARVE("Signature carve"),
+    ROOT("Raw partition"),
+}
+
+data class ActivityEntry(
+    val type: ActivityType,
+    val found: Int,
+    val elapsedMs: Long,
+    val timestamp: Long,
+    val cancelled: Boolean,
+    val detail: String = "",
+)
+
+val RecoveredFile.duplicateKey: String
+    get() = "${size}|${format.lowercase()}|${name.lowercase()}"
+
 data class Settings(
     val accentKey: String = "aurora",
     val maxDepth: Int = 14,
@@ -59,8 +93,12 @@ data class UiState(
     val recoverText: String = "",
     val selectedIds: Set<String> = emptySet(),
     val filter: MediaKind? = null,
+    val confidenceFilter: ConfidenceFilter = ConfidenceFilter.ALL,
+    val duplicatesOnly: Boolean = false,
     val query: String = "",
     val sort: SortMode = SortMode.CONFIDENCE,
+    val reporting: Boolean = false,
+    val history: List<ActivityEntry> = emptyList(),
     val settings: Settings = Settings(),
     val rootStatus: RootStatus? = null,
     val rootDevices: List<BlockDevice> = emptyList(),
@@ -73,6 +111,11 @@ data class UiState(
     val selectedCount: Int get() = selectedIds.size
     val totalFoundBytes: Long get() = results.sumOf { it.size }
     val bestConfidence: Int get() = results.maxOfOrNull { it.confidence } ?: 0
+    val strongCount: Int get() = results.count { it.confidence >= 82 }
+    val duplicateGroups: Map<String, Int>
+        get() = results.groupingBy { it.duplicateKey }.eachCount().filterValues { it > 1 }
+    val duplicateCount: Int get() = results.count { it.duplicateKey in duplicateGroups }
+    val vaultBytes: Long get() = recovered.sumOf { it.size }
     val allKinds: List<MediaKind> get() = MediaKind.entries
     val originSummary: Map<Origin, Int> get() = results.groupingBy { it.origin }.eachCount()
 }

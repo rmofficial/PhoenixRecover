@@ -19,11 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,7 +29,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,6 +38,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.phoenix.recover.RecoverViewModel
 import com.phoenix.recover.engine.MediaKind
 import com.phoenix.recover.engine.RecoveredFile
+import com.phoenix.recover.ui.ConfidenceFilter
 import com.phoenix.recover.ui.Screen
 import com.phoenix.recover.ui.SortMode
 import com.phoenix.recover.ui.UiState
@@ -53,12 +49,14 @@ import com.phoenix.recover.ui.components.FileThumb
 import com.phoenix.recover.ui.components.GhostButton
 import com.phoenix.recover.ui.components.GlassCard
 import com.phoenix.recover.ui.components.GradientButton
+import com.phoenix.recover.ui.components.PhoenixSearchField
 import com.phoenix.recover.ui.components.PillChip
 import com.phoenix.recover.ui.components.PulseDot
 import com.phoenix.recover.ui.components.SectionLabel
 import com.phoenix.recover.ui.components.SelectDot
 import com.phoenix.recover.ui.components.TopBar
 import com.phoenix.recover.ui.components.pressClickable
+import com.phoenix.recover.ui.duplicateKey
 import com.phoenix.recover.ui.theme.LocalAccent
 import com.phoenix.recover.ui.theme.TextPrimary
 import com.phoenix.recover.ui.theme.TextSecondary
@@ -77,13 +75,32 @@ fun ResultsScreen(state: UiState, vm: RecoverViewModel) {
     }
     val selectedBytes = remember(selected) { selected.sumOf { it.size } }
     val counts = remember(state.results) { state.results.groupingBy { it.kind }.eachCount() }
+    val duplicateKeys = remember(state.results) {
+        state.results.groupingBy { it.duplicateKey }.eachCount().filterValues { it > 1 }.keys
+    }
+    val confidenceCounts = remember(state.results) {
+        ConfidenceFilter.entries.associateWith { filter ->
+            state.results.count { filter.matches(it.confidence) }
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         TopBar(
             title = "Recovered results",
             subtitle = "${Fmt.count(visible.size)} shown · ${Fmt.bytes(visibleBytes)}",
+            onBack = { vm.back() },
             trailing = {
+                Text(
+                    if (state.reporting) "…" else "Export",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (state.results.isEmpty() || state.reporting) TextSecondary else accent.a,
+                    modifier = Modifier.pressClickable(
+                        enabled = state.results.isNotEmpty() && !state.reporting,
+                        onClick = vm::exportReport,
+                    ),
+                )
                 if (visible.isNotEmpty()) {
+                    Spacer(Modifier.width(12.dp))
                     Text(
                         if (state.selectedIds.isEmpty()) "Select all" else "Clear",
                         style = MaterialTheme.typography.labelMedium,
@@ -97,7 +114,12 @@ fun ResultsScreen(state: UiState, vm: RecoverViewModel) {
             },
         )
 
-        SearchRow(state.query, vm::setQuery)
+        PhoenixSearchField(
+            query = state.query,
+            modifier = Modifier.padding(horizontal = 18.dp),
+            placeholder = "Search files, formats or folders…",
+            onChange = vm::setQuery,
+        )
 
         LazyRow(
             Modifier.padding(top = 10.dp),
@@ -122,6 +144,29 @@ fun ResultsScreen(state: UiState, vm: RecoverViewModel) {
                         onClick = { vm.setFilter(if (state.filter == kind) null else kind) },
                     )
                 }
+            }
+        }
+
+        LazyRow(
+            Modifier.padding(top = 8.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(ConfidenceFilter.entries.toList(), key = { it.name }) { filter ->
+                PillChip(
+                    label = filter.label,
+                    selected = state.confidenceFilter == filter,
+                    count = confidenceCounts[filter] ?: 0,
+                    onClick = { vm.setConfidenceFilter(filter) },
+                )
+            }
+            item {
+                PillChip(
+                    label = "Duplicates",
+                    selected = state.duplicatesOnly,
+                    count = state.duplicateCount,
+                    onClick = { vm.setDuplicatesOnly(!state.duplicatesOnly) },
+                )
             }
         }
 
@@ -179,20 +224,23 @@ fun ResultsScreen(state: UiState, vm: RecoverViewModel) {
             }
         }
 
+        val filtersActive = state.query.isNotBlank() || state.filter != null ||
+            state.confidenceFilter != ConfidenceFilter.ALL || state.duplicatesOnly
+
         if (visible.isEmpty()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(28.dp)) {
                     EmptyOrb(140.dp)
                     Spacer(Modifier.height(18.dp))
                     Text(
-                        if (state.query.isNotBlank() || state.filter != null) "No matches" else "Nothing recovered yet",
+                        if (filtersActive) "No matches" else "Nothing recovered yet",
                         style = MaterialTheme.typography.headlineMedium.copy(fontSize = 19.sp),
                         color = TextPrimary,
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        if (state.query.isNotBlank() || state.filter != null) {
-                            "Try clearing the search or the file-type filter, or run another scan."
+                        if (filtersActive) {
+                            "Try clearing the search, confidence or file-type filters, or run another scan."
                         } else {
                             "Run a deep scan or carve a raw image to find deleted files."
                         },
@@ -214,6 +262,7 @@ fun ResultsScreen(state: UiState, vm: RecoverViewModel) {
                     ResultRow(
                         file = file,
                         selected = file.id in state.selectedIds,
+                        isDuplicate = file.duplicateKey in duplicateKeys,
                         onToggle = { vm.toggleSelect(file.id) },
                         onOpen = { vm.showPreview(file) },
                     )
@@ -259,8 +308,15 @@ fun ResultsScreen(state: UiState, vm: RecoverViewModel) {
 }
 
 private fun filteredResults(state: UiState): List<RecoveredFile> {
+    val duplicateKeys = if (state.duplicatesOnly) {
+        state.results.groupingBy { it.duplicateKey }.eachCount().filterValues { it > 1 }.keys
+    } else {
+        emptySet()
+    }
     val filtered = state.results.filter { file ->
         (state.filter == null || file.kind == state.filter) &&
+            state.confidenceFilter.matches(file.confidence) &&
+            (!state.duplicatesOnly || file.duplicateKey in duplicateKeys) &&
             (state.query.isBlank() || file.name.contains(state.query, ignoreCase = true) ||
                 file.format.contains(state.query, ignoreCase = true) ||
                 (file.sourcePath ?: "").contains(state.query, ignoreCase = true))
@@ -274,52 +330,10 @@ private fun filteredResults(state: UiState): List<RecoveredFile> {
 }
 
 @Composable
-private fun SearchRow(query: String, onChange: (String) -> Unit) {
-    val accent = LocalAccent.current
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 18.dp)
-            .height(44.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.copy(alpha = 0.045f))
-            .border(1.dp, Color.White.copy(alpha = 0.07f), RoundedCornerShape(14.dp))
-            .padding(horizontal = 13.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(17.dp))
-        Spacer(Modifier.width(9.dp))
-        BasicTextField(
-            value = query,
-            onValueChange = onChange,
-            singleLine = true,
-            cursorBrush = SolidColor(accent.a),
-            textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary, fontSize = 13.sp),
-            modifier = Modifier.weight(1f),
-            decorationBox = { inner ->
-                Box(contentAlignment = Alignment.CenterStart) {
-                    if (query.isEmpty()) {
-                        Text("Search files, formats or folders…", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.5.sp), color = TextSecondary.copy(alpha = 0.7f))
-                    }
-                    inner()
-                }
-            },
-        )
-        if (query.isNotEmpty()) {
-            Text(
-                "×",
-                style = MaterialTheme.typography.titleLarge.copy(fontSize = 17.sp),
-                color = TextSecondary,
-                modifier = Modifier.pressClickable { onChange("") }.padding(horizontal = 4.dp),
-            )
-        }
-    }
-}
-
-@Composable
 private fun ResultRow(
     file: RecoveredFile,
     selected: Boolean,
+    isDuplicate: Boolean,
     onToggle: () -> Unit,
     onOpen: () -> Unit,
 ) {
@@ -361,6 +375,7 @@ private fun ResultRow(
                     append(Fmt.bytes(file.size))
                     if (file.format.isNotBlank()) append(" · ").append(file.format)
                     append(" · ").append(file.origin.label)
+                    if (isDuplicate) append(" · duplicate")
                 },
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
                 color = TextSecondary,

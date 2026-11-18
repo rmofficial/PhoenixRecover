@@ -18,6 +18,9 @@ import com.phoenix.recover.engine.MediaStoreTrash
 import com.phoenix.recover.engine.RecoveredFile
 import com.phoenix.recover.engine.ScanEvent
 import com.phoenix.recover.engine.SeekableSource
+import com.phoenix.recover.ui.ActivityEntry
+import com.phoenix.recover.ui.ActivityType
+import com.phoenix.recover.ui.ConfidenceFilter
 import com.phoenix.recover.ui.Screen
 import com.phoenix.recover.ui.Settings
 import com.phoenix.recover.ui.SortMode
@@ -25,6 +28,7 @@ import com.phoenix.recover.ui.UiState
 import com.phoenix.recover.util.BlockDevice
 import com.phoenix.recover.util.Fmt
 import com.phoenix.recover.util.RecoverySaver
+import com.phoenix.recover.util.ReportExporter
 import com.phoenix.recover.util.RootUtil
 import com.phoenix.recover.util.SavedItem
 import com.phoenix.recover.util.StorageUtil
@@ -67,6 +71,7 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
             settings = loadSettings(),
             hasAccess = StorageUtil.hasStorageAccess(context),
             carveKinds = MediaKind.entries.toSet(),
+            history = loadHistory(),
         )
         viewModelScope.launch {
             val volumes = withBackgroundIo {
@@ -90,6 +95,7 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
 
     fun goTab(screen: Screen) {
         stack.clear()
+        if (screen != Screen.HOME) stack.add(Screen.HOME)
         stack.add(screen)
         applyScreen()
     }
@@ -166,6 +172,8 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
                 lastScan = null,
                 selectedIds = emptySet(),
                 filter = null,
+                confidenceFilter = ConfidenceFilter.ALL,
+                duplicatesOnly = false,
                 query = "",
             )
         }
@@ -251,6 +259,13 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
                         lastScan = result,
                     )
                 }
+                recordActivity(
+                    type = if (trashOnly) ActivityType.TRASH else ActivityType.SCAN,
+                    found = found,
+                    elapsedMs = result.elapsedMs,
+                    cancelled = result.cancelled,
+                    detail = "${Fmt.count(result.dirsVisited)} folders · ${Fmt.count(result.filesInspected)} files",
+                )
                 if (!result.cancelled && found == 0) {
                     toast("No recoverable copy found. Check the gallery recycle bin, or use Root/raw imaging for permanently deleted files.")
                 }
@@ -361,6 +376,8 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
                 lastCarve = null,
                 selectedIds = emptySet(),
                 filter = null,
+                confidenceFilter = ConfidenceFilter.ALL,
+                duplicatesOnly = false,
                 query = "",
             )
         }
@@ -421,6 +438,13 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
                         lastCarve = result,
                     )
                 }
+                recordActivity(
+                    type = ActivityType.CARVE,
+                    found = found,
+                    elapsedMs = result.elapsedMs,
+                    cancelled = result.cancelled,
+                    detail = displayName,
+                )
                 if (!result.cancelled && found == 0) {
                     toast("No signatures found. Look for a raw .img/.dd created with dd.")
                 }
@@ -494,6 +518,34 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(sort = sort) }
     }
 
+    fun setConfidenceFilter(filter: ConfidenceFilter) {
+        _state.update { it.copy(confidenceFilter = filter) }
+    }
+
+    fun setDuplicatesOnly(enabled: Boolean) {
+        _state.update { it.copy(duplicatesOnly = enabled) }
+    }
+
+    fun exportReport() {
+        if (_state.value.reporting) return
+        val items = _state.value.results
+        if (items.isEmpty()) {
+            toast("Nothing to export yet")
+            return
+        }
+        _state.update { it.copy(reporting = true) }
+        viewModelScope.launch {
+            val location = withBackgroundIo {
+                runCatching { ReportExporter.export(context, items) }.getOrNull()
+            }
+            _state.update { it.copy(reporting = false) }
+            toast(
+                if (location != null) "Report saved to $location"
+                else "Could not write the report",
+            )
+        }
+    }
+
     fun showPreview(file: RecoveredFile) {
         _state.update { it.copy(showPreview = file) }
     }
@@ -554,12 +606,9 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
                     recovering = false,
                     recoverText = "",
                     recovered = (saved + it.recovered).distinctBy { r -> r.uri ?: r.path ?: r.id },
-                    screen = Screen.VAULT,
                 )
             }
-            stack.clear()
-            stack.add(Screen.VAULT)
-            applyScreen()
+            goTab(Screen.VAULT)
             saveRecovered()
             if (saved.isEmpty()) {
                 toast("Recovery failed — the source may be unavailable")
@@ -617,6 +666,7 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             val dest = File(rawDir, "raw_${device.name}_${System.currentTimeMillis()}.img")
+            val started = SystemClock.elapsedRealtime()
             val result = withContext(Dispatchers.IO) {
                 RootUtil.createImage(
                     devicePath = device.target,
@@ -629,6 +679,13 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (result.isSuccess) {
                 _state.update { it.copy(rootBusy = false, rootProgress = "") }
+                recordActivity(
+                    type = ActivityType.ROOT,
+                    found = 0,
+                    elapsedMs = SystemClock.elapsedRealtime() - started,
+                    cancelled = false,
+                    detail = "${device.name} · ${sizeMb} MB",
+                )
                 startCarveFromFile(result.getOrThrow(), "${device.name}.img")
             } else {
                 _state.update { it.copy(rootBusy = false, rootProgress = "") }
@@ -703,6 +760,64 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
                 uri = o.optString("uri").takeIf { it.isNotEmpty() && it != "null" },
                 path = o.optString("path").takeIf { it.isNotEmpty() && it != "null" },
                 savedAt = o.optLong("savedAt"),
+            )
+        }
+        items
+    }.getOrDefault(emptyList())
+
+    private fun recordActivity(
+        type: ActivityType,
+        found: Int,
+        elapsedMs: Long,
+        cancelled: Boolean,
+        detail: String,
+    ) {
+        val entry = ActivityEntry(
+            type = type,
+            found = found,
+            elapsedMs = elapsedMs,
+            timestamp = System.currentTimeMillis(),
+            cancelled = cancelled,
+            detail = detail,
+        )
+        val history = (listOf(entry) + _state.value.history).take(12)
+        _state.update { it.copy(history = history) }
+        saveHistory(history)
+    }
+
+    private fun saveHistory(history: List<ActivityEntry>) {
+        runCatching {
+            val array = JSONArray()
+            history.forEach { entry ->
+                array.put(
+                    JSONObject().apply {
+                        put("type", entry.type.name)
+                        put("found", entry.found)
+                        put("elapsed", entry.elapsedMs)
+                        put("timestamp", entry.timestamp)
+                        put("cancelled", entry.cancelled)
+                        put("detail", entry.detail)
+                    },
+                )
+            }
+            prefs.edit().putString("activity_json", array.toString()).apply()
+        }
+    }
+
+    private fun loadHistory(): List<ActivityEntry> = runCatching {
+        val raw = prefs.getString("activity_json", null) ?: return@runCatching emptyList()
+        val array = JSONArray(raw)
+        val items = mutableListOf<ActivityEntry>()
+        for (i in 0 until min(array.length(), 12)) {
+            val o = array.getJSONObject(i)
+            items += ActivityEntry(
+                type = runCatching { ActivityType.valueOf(o.optString("type")) }
+                    .getOrDefault(ActivityType.SCAN),
+                found = o.optInt("found"),
+                elapsedMs = o.optLong("elapsed"),
+                timestamp = o.optLong("timestamp"),
+                cancelled = o.optBoolean("cancelled"),
+                detail = o.optString("detail"),
             )
         }
         items

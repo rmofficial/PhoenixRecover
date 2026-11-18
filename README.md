@@ -16,6 +16,14 @@ uploads.
   magic bytes and structural boundaries.
 - **Root raw imaging** — optionally images a block partition with `dd` when the
   device is rooted. Read-only and cancellable.
+- **Smart results** — filter by confidence (strong/likely/fragment), find
+  duplicates, and select only high-confidence files in one tap.
+- **CSV reports** — export the full recovery report to
+  `Downloads/Phoenix Recover/reports`.
+- **Vault library** — search recovered files by name, filter by type, and sort
+  by newest or largest.
+- **Activity history** — recent scans, carves and raw imaging runs are saved
+  and shown on the dashboard.
 - **Preview and vault** — inspect results, then recover copies to
   `Downloads/Phoenix Recover`.
 - **Offline by design** — all processing happens on the device.

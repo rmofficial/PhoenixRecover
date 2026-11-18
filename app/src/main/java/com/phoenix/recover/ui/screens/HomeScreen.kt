@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.sp
 import com.phoenix.recover.RecoverViewModel
 import com.phoenix.recover.engine.MediaKind
 import com.phoenix.recover.engine.Signatures
+import com.phoenix.recover.ui.ActivityEntry
+import com.phoenix.recover.ui.ActivityType
 import com.phoenix.recover.ui.Screen
 import com.phoenix.recover.ui.UiState
 import com.phoenix.recover.ui.components.AccessPill
@@ -140,7 +142,7 @@ fun HomeScreen(state: UiState, vm: RecoverViewModel) {
                                 ProChip()
                                 Spacer(Modifier.width(7.dp))
                                 Text(
-                                    "V1.1",
+                                    "V1.2",
                                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, letterSpacing = 1.sp),
                                     color = TextSecondary,
                                 )
@@ -274,6 +276,49 @@ fun HomeScreen(state: UiState, vm: RecoverViewModel) {
                             style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
                             color = TextSecondary,
                         )
+                    }
+                }
+            }
+
+            if (state.results.isNotEmpty()) {
+                item {
+                    SectionLabel("Recovery insights")
+                    Spacer(Modifier.height(8.dp))
+                    GlassCard(padding = 16.dp) {
+                        Row {
+                            Metric(Fmt.count(state.strongCount), "strong", Modifier.weight(1f), accent.a)
+                            Metric(Fmt.count(state.duplicateCount), "duplicates", Modifier.weight(1f), accent.b)
+                            Metric(Fmt.bytes(state.vaultBytes), "in vault", Modifier.weight(1f), accent.c)
+                        }
+                        Spacer(Modifier.height(11.dp))
+                        Text(
+                            "Strong files have verified headers and sizes. Duplicates share a name, format and size.",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 10.5.sp, lineHeight = 15.sp),
+                            color = TextSecondary,
+                        )
+                    }
+                }
+            }
+
+            if (state.history.isNotEmpty()) {
+                item {
+                    SectionLabel("Recent activity") {
+                        Text(
+                            "${state.history.size} runs",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    GlassCard(padding = 8.dp) {
+                        state.history.take(3).forEachIndexed { index, entry ->
+                            ActivityRow(entry)
+                            if (index != state.history.take(3).lastIndex) {
+                                Spacer(Modifier.height(6.dp))
+                                Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.05f)))
+                                Spacer(Modifier.height(6.dp))
+                            }
+                        }
                     }
                 }
             }
@@ -433,6 +478,44 @@ private fun RecentCard(file: com.phoenix.recover.engine.RecoveredFile, onClick: 
             style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
             color = TextSecondary,
         )
+    }
+}
+
+@Composable
+private fun ActivityRow(entry: ActivityEntry) {
+    val kind = when (entry.type) {
+        ActivityType.SCAN, ActivityType.TRASH -> MediaKind.DOCUMENT
+        ActivityType.CARVE -> MediaKind.IMAGE
+        ActivityType.ROOT -> MediaKind.ARCHIVE
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        KindBadge(kind, 38.dp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                entry.type.label + if (entry.cancelled) " · stopped" else "",
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 12.5.sp),
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "${Fmt.count(entry.found)} found · ${Fmt.duration(entry.elapsedMs)} · ${Fmt.relativeTime(entry.timestamp)}",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
+                color = TextSecondary,
+            )
+            if (entry.detail.isNotBlank()) {
+                Text(
+                    entry.detail,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                    color = TextSecondary.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 

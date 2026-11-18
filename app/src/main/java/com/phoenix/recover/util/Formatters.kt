@@ -1,5 +1,7 @@
 package com.phoenix.recover.util
 
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 object Fmt {
@@ -42,5 +44,20 @@ object Fmt {
     fun percent(part: Long, total: Long): Int {
         if (total <= 0) return 0
         return ((part.toDouble() / total) * 100).toInt().coerceIn(0, 100)
+    }
+
+    fun relativeTime(timestamp: Long): String {
+        if (timestamp <= 0) return "recently"
+        val diff = (System.currentTimeMillis() - timestamp).coerceAtLeast(0)
+        val minutes = diff / 60_000
+        val hours = diff / 3_600_000
+        val days = diff / 86_400_000
+        return when {
+            minutes < 1 -> "Just now"
+            minutes < 60 -> "${minutes}m ago"
+            hours < 24 -> "${hours}h ago"
+            days < 7 -> "${days}d ago"
+            else -> SimpleDateFormat("d MMM yyyy", Locale.US).format(Date(timestamp))
+        }
     }
 }

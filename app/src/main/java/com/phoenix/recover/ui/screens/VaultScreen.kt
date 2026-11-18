@@ -21,6 +21,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,10 +41,13 @@ import com.phoenix.recover.ui.Screen
 import com.phoenix.recover.ui.UiState
 import com.phoenix.recover.ui.components.BottomNav
 import com.phoenix.recover.ui.components.EmptyOrb
+import com.phoenix.recover.ui.components.GhostButton
 import com.phoenix.recover.ui.components.GlassCard
 import com.phoenix.recover.ui.components.GradientButton
 import com.phoenix.recover.ui.components.KindBadge
+import com.phoenix.recover.ui.components.PhoenixSearchField
 import com.phoenix.recover.ui.components.PillChip
+import com.phoenix.recover.ui.components.SectionLabel
 import com.phoenix.recover.ui.components.TopBar
 import com.phoenix.recover.ui.components.pressClickable
 import com.phoenix.recover.ui.theme.LocalAccent
@@ -57,32 +64,115 @@ import java.util.Locale
 fun VaultScreen(state: UiState, vm: RecoverViewModel) {
     val context = LocalContext.current
     val accent = LocalAccent.current
-    val items = state.recovered.sortedByDescending { it.savedAt }
+    val all = state.recovered.sortedByDescending { it.savedAt }
+    var query by remember { mutableStateOf("") }
+    var kindFilter by remember { mutableStateOf<MediaKind?>(null) }
+    var largestFirst by remember { mutableStateOf(false) }
+    val kinds = all.groupingBy { it.kind }.eachCount()
+    val filtered = all.filter { item ->
+        (kindFilter == null || item.kind == kindFilter) &&
+            (query.isBlank() || item.name.contains(query, ignoreCase = true))
+    }
+    val items = if (largestFirst) filtered.sortedByDescending { it.size } else filtered
+    val filtersActive = query.isNotBlank() || kindFilter != null
 
     Column(Modifier.fillMaxSize()) {
         TopBar(
             title = "Vault",
-            subtitle = if (items.isEmpty()) "Recovered files appear here" else "${Fmt.count(items.size)} files · ${Fmt.bytes(items.sumOf { it.size })}",
+            subtitle = when {
+                all.isEmpty() -> "Recovered files appear here"
+                filtersActive -> "${Fmt.count(items.size)} of ${Fmt.count(all.size)} files · ${Fmt.bytes(items.sumOf { it.size })}"
+                else -> "${Fmt.count(items.size)} files · ${Fmt.bytes(items.sumOf { it.size })}"
+            },
+            onBack = { vm.back() },
         )
+
+        if (all.isNotEmpty()) {
+            PhoenixSearchField(
+                query = query,
+                modifier = Modifier.padding(horizontal = 18.dp),
+                placeholder = "Search your recovered library…",
+                onChange = { query = it },
+            )
+            Spacer(Modifier.height(10.dp))
+            LazyRow(
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    PillChip(
+                        label = "All",
+                        selected = kindFilter == null,
+                        count = all.size,
+                        onClick = { kindFilter = null },
+                    )
+                }
+                items(MediaKind.entries.toList(), key = { it.name }) { kind ->
+                    val count = kinds[kind] ?: 0
+                    if (count > 0) {
+                        PillChip(
+                            label = kind.label,
+                            selected = kindFilter == kind,
+                            count = count,
+                            onClick = { kindFilter = if (kindFilter == kind) null else kind },
+                        )
+                    }
+                }
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SectionLabel("Library", Modifier.weight(1f)) {
+                    Text(
+                        if (largestFirst) "Largest first" else "Newest first",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accent.a,
+                        modifier = Modifier.pressClickable { largestFirst = !largestFirst },
+                    )
+                }
+            }
+        }
 
         if (items.isEmpty()) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(28.dp)) {
                     EmptyOrb(150.dp)
                     Spacer(Modifier.height(20.dp))
-                    Text(
-                        "Your vault is empty",
-                        style = MaterialTheme.typography.headlineMedium.copy(fontSize = 20.sp),
-                        color = TextPrimary,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Recovered files are copied to Downloads/Phoenix Recover and listed here for quick access.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary,
-                    )
-                    Spacer(Modifier.height(18.dp))
-                    GradientButton("Find deleted files", Modifier.width(200.dp)) { vm.startDeepScan(false) }
+                    if (all.isEmpty()) {
+                        Text(
+                            "Your vault is empty",
+                            style = MaterialTheme.typography.headlineMedium.copy(fontSize = 20.sp),
+                            color = TextPrimary,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Recovered files are copied to Downloads/Phoenix Recover and listed here for quick access.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary,
+                        )
+                        Spacer(Modifier.height(18.dp))
+                        GradientButton("Find deleted files", Modifier.width(200.dp)) { vm.startDeepScan(false) }
+                    } else {
+                        Text(
+                            "No matches",
+                            style = MaterialTheme.typography.headlineMedium.copy(fontSize = 20.sp),
+                            color = TextPrimary,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Try a different name or file type.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary,
+                        )
+                        Spacer(Modifier.height(18.dp))
+                        GhostButton("Clear filters", Modifier.width(180.dp)) {
+                            query = ""
+                            kindFilter = null
+                        }
+                    }
                 }
             }
         } else {

@@ -63,7 +63,11 @@ fun SettingsScreen(state: UiState, vm: RecoverViewModel) {
     val settings = state.settings
 
     Column(Modifier.fillMaxSize()) {
-        TopBar(title = "Settings", subtitle = "Engine, appearance & storage")
+        TopBar(
+            title = "Settings",
+            subtitle = "Engine, appearance & storage",
+            onBack = { vm.back() },
+        )
         LazyColumn(
             Modifier.weight(1f),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp, vertical = 6.dp),
@@ -223,7 +227,7 @@ fun SettingsScreen(state: UiState, vm: RecoverViewModel) {
                         Column(Modifier.weight(1f)) {
                             Text("Phoenix Recover", style = MaterialTheme.typography.titleLarge.copy(fontSize = 15.sp), color = TextPrimary)
                             Text(
-                                "Version 1.1.0 · ${Signatures.ALL.size} formats · offline",
+                                "Version 1.2.0 · ${Signatures.ALL.size} formats · offline",
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
                                 color = TextSecondary,
                             )
