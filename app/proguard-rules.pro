@@ -1,0 +1,2 @@
+-keep class com.phoenix.recover.engine.** { *; }
+-dontwarn org.jetbrains.annotations.**
