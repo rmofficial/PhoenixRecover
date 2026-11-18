@@ -141,6 +141,10 @@ Recovery can only restore data whose blocks have not been overwritten. Deep
 scans and carving cannot guarantee resurrection of permanently deleted files,
 and the device should be used as little as possible after data loss.
 
+## License
+
+MIT © 2026 Rahul Mandal — see [LICENSE](LICENSE).
+
 ## Author
 
 Rahul Mandal ([@rmofficial](https://github.com/rmofficial))
