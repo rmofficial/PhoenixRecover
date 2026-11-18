@@ -1,0 +1,9 @@
+# Make GitHub classify the native engine sources correctly
+app/src/main/cpp/*.cpp linguist-language=C++
+app/src/main/cpp/*.h linguist-language=C++
+app/src/main/cpp/CMakeLists.txt linguist-language=CMake
+app/src/main/cpp/*.sh linguist-language=Shell
+*.gradle linguist-language=Groovy
+
+# Prebuilt native libraries are binaries, not source
+*.so binary
