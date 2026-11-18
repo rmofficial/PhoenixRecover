@@ -32,6 +32,8 @@ class Carver(
         isCancelled: () -> Boolean = { false },
         onEvent: (CarveEvent) -> Unit = {},
     ): CarveResult {
+        NativeEngine.carve(source, outputDir, options, isCancelled, onEvent)?.let { return it }
+
         val startedAt = System.currentTimeMillis()
         outputDir?.mkdirs()
 

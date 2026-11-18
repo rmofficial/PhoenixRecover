@@ -7,11 +7,19 @@ import java.io.RandomAccessFile
 interface SeekableSource : Closeable {
     val length: Long
     fun readAt(offset: Long, buffer: ByteArray, bufferOffset: Int, count: Int): Int
+
+    /** Path the native engine can open directly, when available. */
+    fun nativePath(): String? = null
+
+    /** Duplicated file descriptor the native engine takes ownership of. */
+    fun nativeFd(): Int = -1
 }
 
-class FileSource(file: File) : SeekableSource {
+class FileSource(private val file: File) : SeekableSource {
     private val raf = RandomAccessFile(file, "r")
     override val length: Long = raf.length()
+
+    override fun nativePath(): String = file.absolutePath
 
     override fun readAt(offset: Long, buffer: ByteArray, bufferOffset: Int, count: Int): Int {
         if (offset >= length || count <= 0) return -1

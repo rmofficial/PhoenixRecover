@@ -89,7 +89,10 @@ object Sniffer {
         return DetectedFile(ext.uppercase(), ext, mime, kind, 35)
     }
 
-    fun sniff(b: ByteArray, n: Int): DetectedFile? {
+    fun sniff(b: ByteArray, n: Int): DetectedFile? =
+        if (NativeEngine.available) NativeEngine.sniff(b, n) else sniffKotlin(b, n)
+
+    private fun sniffKotlin(b: ByteArray, n: Int): DetectedFile? {
         if (n < 4) return null
         fun u(i: Int) = b[i].toInt() and 0xFF
         fun a(i: Int, len: Int): String {

@@ -44,6 +44,8 @@ class DeepScanner(private val options: DeepScanOptions) {
         isCancelled: () -> Boolean = { false },
         onEvent: (ScanEvent) -> Unit = {},
     ): ScanResult {
+        NativeEngine.deepScan(options, isCancelled, onEvent)?.let { return it }
+
         val startedAt = System.currentTimeMillis()
         var dirsVisited = 0
         var filesInspected = 0

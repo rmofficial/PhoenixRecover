@@ -2,6 +2,7 @@ package com.phoenix.recover.engine
 
 import android.content.Context
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import java.io.FileInputStream
 import java.nio.ByteBuffer
@@ -31,6 +32,15 @@ class ContentUriSource(context: Context, uri: Uri) : SeekableSource {
                 total += read
             }
             return if (total == 0) -1 else total
+        }
+    }
+
+    override fun nativeFd(): Int {
+        return try {
+            val duplicate = ParcelFileDescriptor.dup(pfd.fileDescriptor)
+            duplicate.detachFd()
+        } catch (_: Throwable) {
+            -1
         }
     }
 

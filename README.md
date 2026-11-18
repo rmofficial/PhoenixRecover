@@ -25,6 +25,7 @@ uploads.
 - Kotlin
 - Jetpack Compose and Material 3
 - AndroidX Lifecycle and Coroutines
+- C++17 native engine (signature carver, sniffer and deep scanner) called over JNI
 - Gradle (Kotlin DSL for the root build, Groovy for the app module)
 - JUnit 4
 
@@ -62,6 +63,25 @@ android.aapt2FromMavenOverride=/data/data/com.termux/files/usr/bin/aapt2
 Do not commit that path to the project `gradle.properties` — it is
 machine-specific.
 
+### Native engine
+
+The recovery engine lives in `app/src/main/cpp` and is written in C++17. It
+implements the signature table, carver, sniffer and deep scanner, and is
+exposed to Kotlin through `NativeEngine.kt`. The UI stays in Jetpack Compose.
+
+A prebuilt `arm64-v8a` library is packaged from
+`app/src/main/jniLibs/arm64-v8a`. Rebuild it on Termux with the bundled Android
+targeting clang:
+
+```bash
+app/src/main/cpp/build-termux.sh
+```
+
+On a machine with the Android NDK installed, `app/src/main/cpp/CMakeLists.txt`
+can be used with `externalNativeBuild` instead. When the native library is
+unavailable the Kotlin engine is used as a fallback, so JVM unit tests and
+non-arm64 devices keep working.
+
 ## Tests
 
 ```bash
@@ -74,6 +94,16 @@ handling, minimum size rules and deep-scan trash detection.
 ## Project structure
 
 ```text
+app/src/main/cpp/
+├── engine_core.h            # Engine types and public API
+├── signatures.cpp           # Signatures, magic-byte sniffer
+├── sources.cpp              # File descriptor and memory sources
+├── carver.cpp               # Streaming signature carver
+├── scanner.cpp              # Deep filesystem scanner
+├── jni_bridge.cpp           # JNI entry points
+├── CMakeLists.txt           # Optional NDK build
+└── build-termux.sh          # Termux/Android clang build script
+
 app/src/main/java/com/phoenix/recover/
 ├── AppViewModel.kt          # UI state, scan/carve orchestration
 ├── MainActivity.kt
