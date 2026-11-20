@@ -112,6 +112,8 @@ fun Modifier.pressClickable(
         )
 }
 
+fun Modifier.tapClickable(onClick: () -> Unit): Modifier = clickable(onClick = onClick)
+
 @Composable
 fun PhoenixBackground(content: @Composable () -> Unit) {
     val accent = LocalAccent.current
@@ -164,12 +166,17 @@ fun GlassCard(
     corner: Dp = 22.dp,
     padding: Dp = 18.dp,
     onClick: (() -> Unit)? = null,
+    pressAnimation: Boolean = true,
     contentPadding: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val accent = LocalAccent.current
     val shape = RoundedCornerShape(corner)
-    val base = if (onClick != null) modifier.pressClickable(onClick = onClick) else modifier
+    val base = when {
+        onClick == null -> modifier
+        pressAnimation -> modifier.pressClickable(onClick = onClick)
+        else -> modifier.tapClickable(onClick = onClick)
+    }
     Box(
         base
             .clip(shape)
@@ -722,7 +729,7 @@ fun KindBadge(kind: MediaKind, size: Dp = 46.dp, modifier: Modifier = Modifier) 
 @Composable
 fun ConfidenceRing(value: Int, size: Dp = 38.dp, modifier: Modifier = Modifier) {
     val accent = LocalAccent.current
-    val animated by animateFloatAsState(value.coerceIn(0, 100) / 100f, tween(700), label = "conf")
+    val ratio = value.coerceIn(0, 100) / 100f
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             val sw = 3.dp.toPx()
@@ -730,7 +737,7 @@ fun ConfidenceRing(value: Int, size: Dp = 38.dp, modifier: Modifier = Modifier) 
             drawArc(
                 brush = Brush.sweepGradient(listOf(accent.a, accent.b, accent.c, accent.a)),
                 startAngle = -90f,
-                sweepAngle = 360f * animated,
+                sweepAngle = 360f * ratio,
                 useCenter = false,
                 topLeft = Offset(sw, sw),
                 size = Size(this.size.width - sw * 2, this.size.height - sw * 2),
@@ -773,7 +780,7 @@ fun FileThumb(file: RecoveredFile, size: Dp = 58.dp, modifier: Modifier = Modifi
     }
 }
 
-private val thumbCache = object : LruCache<String, ImageBitmap>(24 * 1024 * 1024) {
+private val thumbCache = object : LruCache<String, ImageBitmap>(12 * 1024 * 1024) {
     override fun sizeOf(key: String, value: ImageBitmap): Int = value.width * value.height * 4
 }
 
@@ -796,8 +803,7 @@ private suspend fun <T> loadThumbnail(block: () -> T): T = withContext(Dispatche
 }
 
 private fun thumbKey(path: String, video: Boolean, maxPx: Int): String {
-    val modified = runCatching { java.io.File(path).lastModified() }.getOrDefault(0L)
-    return "$path|$video|$maxPx|$modified"
+    return "$path|$video|$maxPx"
 }
 
 @Composable
@@ -918,7 +924,9 @@ fun SelectDot(selected: Boolean, modifier: Modifier = Modifier, size: Dp = 24.dp
 
 @Composable
 fun PulseDot(color: Color = LocalAccent.current.a, size: Dp = 6.dp, animated: Boolean = true) {
-    val alpha = if (animated) {
+    // The animated alpha is read in the draw phase, so the pulsing dot only
+    // invalidates its own pixels instead of recomposing on every frame.
+    val alphaState = if (animated) {
         val infinite = rememberInfiniteTransition(label = "pulse")
         infinite.animateFloat(
             initialValue = 0.35f,
@@ -928,15 +936,16 @@ fun PulseDot(color: Color = LocalAccent.current.a, size: Dp = 6.dp, animated: Bo
                 repeatMode = RepeatMode.Reverse,
             ),
             label = "pulseAlpha",
-        ).value
+        )
     } else {
-        0.85f
+        null
     }
     Box(
         Modifier
             .size(size)
-            .clip(CircleShape)
-            .background(color.copy(alpha = alpha)),
+            .drawBehind {
+                drawCircle(color.copy(alpha = alphaState?.value ?: 0.85f))
+            },
     )
 }
 
@@ -979,18 +988,25 @@ fun ProChip() {
 }
 
 @Composable
-fun EmptyOrb(size: Dp = 130.dp) {
+fun EmptyOrb(size: Dp = 130.dp, animated: Boolean = false) {
     val accent = LocalAccent.current
-    val infinite = rememberInfiniteTransition(label = "empty")
-    val rotation = infinite.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(14000, easing = LinearEasing),
-        ),
-        label = "emptyRot",
-    ).value
+    // Decorative orb on empty screens: static by default so an idle screen never
+    // keeps the GPU busy or drains the battery.
+    val rotationState = if (animated) {
+        val infinite = rememberInfiniteTransition(label = "empty")
+        infinite.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(14000, easing = LinearEasing),
+            ),
+            label = "emptyRot",
+        )
+    } else {
+        null
+    }
     Canvas(Modifier.size(size)) {
+        val rotation = rotationState?.value ?: 0f
         val s = this.size.minDimension
         val center = Offset(this.size.width / 2, this.size.height / 2)
         drawCircle(

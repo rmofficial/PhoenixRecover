@@ -52,35 +52,54 @@ fun RecoveryOrb(
 ) {
     val accent = LocalAccent.current
     val animated = active || progress != null
-    val infinite = rememberInfiniteTransition(label = "orb")
-    val spin = infinite.animateFloat(
-        0f, 360f,
-        infiniteRepeatable(tween(if (active) 7000 else 24000, easing = LinearEasing)),
-        label = "spin",
-    ).value
-    val counterRaw = infinite.animateFloat(
-        360f, 0f,
-        infiniteRepeatable(tween(11000, easing = LinearEasing)),
-        label = "counter",
-    ).value
-    val pulseRaw = infinite.animateFloat(
-        0.94f, 1.04f,
-        infiniteRepeatable(tween(1900, easing = LinearEasing), RepeatMode.Reverse),
-        label = "pulse",
-    ).value
-    val shimmerRaw = infinite.animateFloat(
-        0f, 1f,
-        infiniteRepeatable(tween(3600, easing = LinearEasing)),
-        label = "shimmer",
-    ).value
 
-    // Idle orbs keep the slow spin; fast sweeps only run while working.
-    val counterSpin = if (animated) counterRaw else 0f
-    val pulse = if (animated) pulseRaw else 0.97f
-    val shimmer = if (animated) shimmerRaw else 0.35f
+    // Idle orbs are completely static. Active orbs keep their animation state
+    // and read it inside the draw scope, so each frame only redraws the canvas
+    // instead of recomposing the whole orb with its text and layout.
+    val infinite = if (animated) rememberInfiniteTransition(label = "orb") else null
+    val spinState = if (infinite != null) {
+        infinite.animateFloat(
+            0f, 360f,
+            infiniteRepeatable(tween(if (active) 7000 else 24000, easing = LinearEasing)),
+            label = "spin",
+        )
+    } else {
+        null
+    }
+    val counterSpinState = if (infinite != null) {
+        infinite.animateFloat(
+            360f, 0f,
+            infiniteRepeatable(tween(11000, easing = LinearEasing)),
+            label = "counter",
+        )
+    } else {
+        null
+    }
+    val pulseState = if (infinite != null) {
+        infinite.animateFloat(
+            0.94f, 1.04f,
+            infiniteRepeatable(tween(1900, easing = LinearEasing), RepeatMode.Reverse),
+            label = "pulse",
+        )
+    } else {
+        null
+    }
+    val shimmerState = if (infinite != null) {
+        infinite.animateFloat(
+            0f, 1f,
+            infiniteRepeatable(tween(3600, easing = LinearEasing)),
+            label = "shimmer",
+        )
+    } else {
+        null
+    }
 
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
+            val spin = spinState?.value ?: 0f
+            val counterSpin = counterSpinState?.value ?: 0f
+            val pulse = pulseState?.value ?: 0.97f
+            val shimmer = shimmerState?.value ?: 0.35f
             val s = this.size.minDimension
             val c = Offset(this.size.width / 2, this.size.height / 2)
             val glow = s * 0.62f

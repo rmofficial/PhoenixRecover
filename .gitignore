@@ -32,3 +32,6 @@ secrets.properties
 # OS
 .DS_Store
 Thumbs.db
+
+# Signing artifacts
+*.idsig

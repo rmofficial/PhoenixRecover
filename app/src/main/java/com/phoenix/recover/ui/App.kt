@@ -4,6 +4,8 @@ import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -86,9 +88,13 @@ fun PhoenixApp(vm: RecoverViewModel) {
                     AnimatedContent(
                         targetState = state.screen,
                         transitionSpec = {
-                            (fadeIn(androidx.compose.animation.core.tween(180)) +
-                                slideInHorizontally { it / 24 })
-                                .togetherWith(fadeOut(androidx.compose.animation.core.tween(120)))
+                            if (initialState.isTab && targetState.isTab) {
+                                EnterTransition.None togetherWith ExitTransition.None
+                            } else {
+                                (fadeIn(androidx.compose.animation.core.tween(180)) +
+                                    slideInHorizontally { it / 24 })
+                                    .togetherWith(fadeOut(androidx.compose.animation.core.tween(120)))
+                            }
                         },
                         label = "screen",
                     ) { screen ->
@@ -112,6 +118,10 @@ fun PhoenixApp(vm: RecoverViewModel) {
         }
     }
 }
+
+private val Screen.isTab: Boolean
+    get() = this == Screen.HOME || this == Screen.RESULTS ||
+        this == Screen.VAULT || this == Screen.SETTINGS
 
 @Composable
 private fun ToastHost(vm: RecoverViewModel, message: String?) {

@@ -286,11 +286,12 @@ public:
                 }
 
                 ++filesInspected;
-                if (filesInspected % 512 == 0) ::usleep(1000);
+                if ((filesInspected & 127) == 0) ::usleep(2000);
                 if (!statOk) continue;
                 inspect(child, name, st.st_size, seenFiles);
             }
             ::closedir(handle);
+            if ((dirsVisited & 31) == 0) ::usleep(1000);
 
             const int64_t now = elapsedMs(started);
             if (now - lastProgress >= 220) {

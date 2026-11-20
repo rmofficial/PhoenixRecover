@@ -56,6 +56,7 @@ import com.phoenix.recover.ui.components.SectionLabel
 import com.phoenix.recover.ui.components.SelectDot
 import com.phoenix.recover.ui.components.TopBar
 import com.phoenix.recover.ui.components.pressClickable
+import com.phoenix.recover.ui.components.tapClickable
 import com.phoenix.recover.ui.duplicateKey
 import com.phoenix.recover.ui.theme.LocalAccent
 import com.phoenix.recover.ui.theme.TextPrimary
@@ -66,23 +67,25 @@ import com.phoenix.recover.util.Fmt
 @Composable
 fun ResultsScreen(state: UiState, vm: RecoverViewModel) {
     val accent = LocalAccent.current
-    val visible = remember(state.results, state.filter, state.query, state.sort) {
-        filteredResults(state)
+    val view = remember(
+        state.results,
+        state.filter,
+        state.confidenceFilter,
+        state.duplicatesOnly,
+        state.query,
+        state.sort,
+    ) {
+        buildResultsView(state)
     }
+    val visible = view.visible
     val visibleBytes = remember(visible) { visible.sumOf { it.size } }
     val selected = remember(state.results, state.selectedIds) {
         state.results.filter { it.id in state.selectedIds }
     }
     val selectedBytes = remember(selected) { selected.sumOf { it.size } }
-    val counts = remember(state.results) { state.results.groupingBy { it.kind }.eachCount() }
-    val duplicateKeys = remember(state.results) {
-        state.results.groupingBy { it.duplicateKey }.eachCount().filterValues { it > 1 }.keys
-    }
-    val confidenceCounts = remember(state.results) {
-        ConfidenceFilter.entries.associateWith { filter ->
-            state.results.count { filter.matches(it.confidence) }
-        }
-    }
+    val counts = view.kindCounts
+    val duplicateKeys = view.duplicateKeys
+    val confidenceCounts = view.confidenceCounts
 
     Column(Modifier.fillMaxSize()) {
         TopBar(
@@ -164,7 +167,7 @@ fun ResultsScreen(state: UiState, vm: RecoverViewModel) {
                 PillChip(
                     label = "Duplicates",
                     selected = state.duplicatesOnly,
-                    count = state.duplicateCount,
+                    count = view.duplicateFileCount,
                     onClick = { vm.setDuplicatesOnly(!state.duplicatesOnly) },
                 )
             }
@@ -307,26 +310,65 @@ fun ResultsScreen(state: UiState, vm: RecoverViewModel) {
     }
 }
 
-private fun filteredResults(state: UiState): List<RecoveredFile> {
-    val duplicateKeys = if (state.duplicatesOnly) {
-        state.results.groupingBy { it.duplicateKey }.eachCount().filterValues { it > 1 }.keys
+private data class ResultsView(
+    val visible: List<RecoveredFile>,
+    val duplicateKeys: Set<String>,
+    val duplicateFileCount: Int,
+    val confidenceCounts: Map<ConfidenceFilter, Int>,
+    val kindCounts: Map<MediaKind, Int>,
+)
+
+private fun buildResultsView(state: UiState): ResultsView {
+    val kindCounts = HashMap<MediaKind, Int>()
+    val strong = intArrayOf(0)
+    val likely = intArrayOf(0)
+    val fragment = intArrayOf(0)
+    val groups = HashMap<String, Int>()
+    state.results.forEach { file ->
+        kindCounts.merge(file.kind, 1, Int::plus)
+        when {
+            file.confidence >= 82 -> strong[0]++
+            file.confidence >= 55 -> likely[0]++
+            else -> fragment[0]++
+        }
+        groups.merge(file.duplicateKey, 1, Int::plus)
+    }
+    val duplicateKeys = groups.filterValues { it > 1 }.keys
+    val duplicateFileCount = groups.values.sumOf { if (it > 1) it else 0 }
+
+    val query = state.query
+    val filtered = if (query.isBlank() && state.confidenceFilter == ConfidenceFilter.ALL &&
+        !state.duplicatesOnly && state.filter == null
+    ) {
+        state.results
     } else {
-        emptySet()
+        state.results.filter { file ->
+            (state.filter == null || file.kind == state.filter) &&
+                state.confidenceFilter.matches(file.confidence) &&
+                (!state.duplicatesOnly || file.duplicateKey in duplicateKeys) &&
+                (query.isBlank() || file.name.contains(query, ignoreCase = true) ||
+                    file.format.contains(query, ignoreCase = true) ||
+                    (file.sourcePath ?: "").contains(query, ignoreCase = true))
+        }
     }
-    val filtered = state.results.filter { file ->
-        (state.filter == null || file.kind == state.filter) &&
-            state.confidenceFilter.matches(file.confidence) &&
-            (!state.duplicatesOnly || file.duplicateKey in duplicateKeys) &&
-            (state.query.isBlank() || file.name.contains(state.query, ignoreCase = true) ||
-                file.format.contains(state.query, ignoreCase = true) ||
-                (file.sourcePath ?: "").contains(state.query, ignoreCase = true))
-    }
-    return when (state.sort) {
+    val sorted = when (state.sort) {
         SortMode.CONFIDENCE -> filtered.sortedByDescending { it.confidence }
         SortMode.SIZE -> filtered.sortedByDescending { it.size }
-        SortMode.NAME -> filtered.sortedBy { it.name.lowercase() }
+        SortMode.NAME -> filtered.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
         SortMode.ORIGIN -> filtered.sortedBy { it.origin.label }
     }
+    return ResultsView(
+        visible = sorted,
+        duplicateKeys = duplicateKeys,
+        duplicateFileCount = duplicateFileCount,
+        confidenceCounts = mapOf(
+            ConfidenceFilter.ALL to state.results.size,
+            ConfidenceFilter.STRONG to strong[0],
+            ConfidenceFilter.LIKELY to likely[0],
+            ConfidenceFilter.FRAGMENT to fragment[0],
+        ),
+        kindCounts = kindCounts,
+    )
 }
 
 @Composable
@@ -351,11 +393,11 @@ private fun ResultRow(
                 },
             )
             .border(1.dp, if (selected) accent.a.copy(alpha = 0.42f) else Color.White.copy(alpha = 0.06f), shape)
-            .pressClickable(onClick = onOpen)
+            .tapClickable(onClick = onOpen)
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.pressClickable(onClick = onToggle)) {
+        Box(Modifier.tapClickable(onClick = onToggle)) {
             SelectDot(selected = selected, size = 26.dp)
         }
         Spacer(Modifier.width(10.dp))

@@ -234,21 +234,22 @@ fun ScanScreen(state: UiState, vm: RecoverViewModel) {
 @Composable
 private fun ScanBar(active: Boolean) {
     val accent = LocalAccent.current
-    val phase = if (active) {
+    val phaseState = if (active) {
         val infinite = rememberInfiniteTransition(label = "scanbar")
         infinite.animateFloat(
             0f, 1f,
             infiniteRepeatable(tween(1500, easing = LinearEasing)),
             label = "phase",
-        ).value
+        )
     } else {
-        0f
+        null
     }
     Canvas(
         Modifier
             .fillMaxWidth()
             .height(6.dp),
     ) {
+        val phase = phaseState?.value ?: 0f
         val h = size.height
         drawRoundRect(
             color = Color.White.copy(alpha = 0.06f),

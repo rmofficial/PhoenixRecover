@@ -46,6 +46,7 @@ import com.phoenix.recover.ui.ActivityEntry
 import com.phoenix.recover.ui.ActivityType
 import com.phoenix.recover.ui.Screen
 import com.phoenix.recover.ui.UiState
+import com.phoenix.recover.ui.duplicateKey
 import com.phoenix.recover.ui.components.AccessPill
 import com.phoenix.recover.ui.components.BottomNav
 import com.phoenix.recover.ui.components.EmptyOrb
@@ -76,6 +77,15 @@ fun HomeScreen(state: UiState, vm: RecoverViewModel) {
     val accent = LocalAccent.current
     val latest = remember(state.results) {
         state.results.takeLast(8).asReversed()
+    }
+    val insights = remember(state.results) {
+        var strong = 0
+        val groups = HashMap<String, Int>()
+        state.results.forEach { file ->
+            if (file.confidence >= 82) strong++
+            groups.merge(file.duplicateKey, 1, Int::plus)
+        }
+        strong to groups.values.sumOf { if (it > 1) it else 0 }
     }
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -269,7 +279,7 @@ fun HomeScreen(state: UiState, vm: RecoverViewModel) {
                     }
                     Spacer(Modifier.height(14.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        PulseDot(accent.a)
+                        PulseDot(accent.a, animated = state.scanning)
                         Spacer(Modifier.width(7.dp))
                         Text(
                             if (state.scanning) "Engine is scanning storage right now" else "All processing stays on this device",
@@ -286,8 +296,8 @@ fun HomeScreen(state: UiState, vm: RecoverViewModel) {
                     Spacer(Modifier.height(8.dp))
                     GlassCard(padding = 16.dp) {
                         Row {
-                            Metric(Fmt.count(state.strongCount), "strong", Modifier.weight(1f), accent.a)
-                            Metric(Fmt.count(state.duplicateCount), "duplicates", Modifier.weight(1f), accent.b)
+                            Metric(Fmt.count(insights.first), "strong", Modifier.weight(1f), accent.a)
+                            Metric(Fmt.count(insights.second), "duplicates", Modifier.weight(1f), accent.b)
                             Metric(Fmt.bytes(state.vaultBytes), "in vault", Modifier.weight(1f), accent.c)
                         }
                         Spacer(Modifier.height(11.dp))

@@ -50,6 +50,7 @@ import com.phoenix.recover.ui.components.PillChip
 import com.phoenix.recover.ui.components.SectionLabel
 import com.phoenix.recover.ui.components.TopBar
 import com.phoenix.recover.ui.components.pressClickable
+import com.phoenix.recover.ui.components.tapClickable
 import com.phoenix.recover.ui.theme.LocalAccent
 import com.phoenix.recover.ui.theme.TextPrimary
 import com.phoenix.recover.ui.theme.TextSecondary
@@ -64,16 +65,20 @@ import java.util.Locale
 fun VaultScreen(state: UiState, vm: RecoverViewModel) {
     val context = LocalContext.current
     val accent = LocalAccent.current
-    val all = state.recovered.sortedByDescending { it.savedAt }
+    val all = remember(state.recovered) { state.recovered.sortedByDescending { it.savedAt } }
     var query by remember { mutableStateOf("") }
     var kindFilter by remember { mutableStateOf<MediaKind?>(null) }
     var largestFirst by remember { mutableStateOf(false) }
-    val kinds = all.groupingBy { it.kind }.eachCount()
-    val filtered = all.filter { item ->
-        (kindFilter == null || item.kind == kindFilter) &&
-            (query.isBlank() || item.name.contains(query, ignoreCase = true))
+    val kinds = remember(all) { all.groupingBy { it.kind }.eachCount() }
+    val filtered = remember(all, kindFilter, query) {
+        all.filter { item ->
+            (kindFilter == null || item.kind == kindFilter) &&
+                (query.isBlank() || item.name.contains(query, ignoreCase = true))
+        }
     }
-    val items = if (largestFirst) filtered.sortedByDescending { it.size } else filtered
+    val items = remember(filtered, largestFirst) {
+        if (largestFirst) filtered.sortedByDescending { it.size } else filtered
+    }
     val filtersActive = query.isNotBlank() || kindFilter != null
 
     Column(Modifier.fillMaxSize()) {
@@ -236,7 +241,7 @@ fun VaultScreen(state: UiState, vm: RecoverViewModel) {
 @Composable
 private fun VaultRow(item: SavedItem, onOpen: () -> Unit, onShare: () -> Unit) {
     val accent = LocalAccent.current
-    GlassCard(padding = 11.dp, corner = 18.dp, onClick = onOpen) {
+    GlassCard(padding = 11.dp, corner = 18.dp, onClick = onOpen, pressAnimation = false) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             KindBadge(item.kind, 48.dp)
             Spacer(Modifier.width(12.dp))
@@ -280,18 +285,21 @@ private fun MiniAction(text: String, color: Color, onClick: () -> Unit) {
             .clip(RoundedCornerShape(50))
             .background(Color.White.copy(alpha = 0.055f))
             .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
-            .pressClickable(onClick = onClick)
+            .tapClickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )
 }
+
+private val vaultTimeFormat = SimpleDateFormat("h:mm a", Locale.US)
+private val vaultDateFormat = SimpleDateFormat("d MMM yyyy", Locale.US)
 
 private fun dateLabel(ms: Long): String {
     if (ms <= 0) return "recently"
     val now = System.currentTimeMillis()
     val dayStart = now - (now % (24 * 60 * 60 * 1000))
     return when {
-        ms >= dayStart -> "Today " + SimpleDateFormat("h:mm a", Locale.US).format(Date(ms))
+        ms >= dayStart -> "Today " + vaultTimeFormat.format(Date(ms))
         ms >= dayStart - 86_400_000 -> "Yesterday"
-        else -> SimpleDateFormat("d MMM yyyy", Locale.US).format(Date(ms))
+        else -> vaultDateFormat.format(Date(ms))
     }
 }

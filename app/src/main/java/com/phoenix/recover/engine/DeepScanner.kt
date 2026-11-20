@@ -119,9 +119,9 @@ class DeepScanner(private val options: DeepScanOptions) {
                     continue
                 }
                 filesInspected++
-                if (filesInspected % 512 == 0) {
+                if (filesInspected % 128 == 0) {
                     try {
-                        Thread.sleep(1)
+                        Thread.sleep(2)
                     } catch (_: InterruptedException) {
                     }
                 }
