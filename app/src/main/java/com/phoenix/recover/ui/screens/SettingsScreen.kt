@@ -1,7 +1,13 @@
 package com.phoenix.recover.ui.screens
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.widget.Toast
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -26,13 +32,25 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.phoenix.recover.R
 import com.phoenix.recover.RecoverViewModel
 import com.phoenix.recover.engine.MediaKind
 import com.phoenix.recover.engine.Signatures
@@ -45,6 +63,7 @@ import com.phoenix.recover.ui.components.GlassCard
 import com.phoenix.recover.ui.components.GradientButton
 import com.phoenix.recover.ui.components.KindBadge
 import com.phoenix.recover.ui.components.PhoenixMark
+import com.phoenix.recover.ui.components.PulseDot
 import com.phoenix.recover.ui.components.SectionLabel
 import com.phoenix.recover.ui.components.TopBar
 import com.phoenix.recover.ui.components.pressClickable
@@ -251,6 +270,13 @@ fun SettingsScreen(state: UiState, vm: RecoverViewModel) {
                     )
                 }
             }
+
+            item {
+                SectionLabel("Developer")
+                Spacer(Modifier.height(9.dp))
+                DeveloperCard()
+            }
+
             item {
                 Text(
                     "Built for offline, on-device recovery.",
@@ -393,4 +419,319 @@ private fun Divider() {
     Spacer(Modifier.height(12.dp))
     Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.05f)))
     Spacer(Modifier.height(12.dp))
+}
+
+private enum class DevGlyph { EMAIL, PHONE, GITHUB, FACEBOOK }
+
+@Composable
+private fun DeveloperCard() {
+    val context = LocalContext.current
+    val accent = LocalAccent.current
+    val shape = RoundedCornerShape(24.dp)
+    val email = "rahulmandal.official@zohomail.in"
+    val phone = "7430852038"
+    val github = "https://github.com/rmofficial"
+    val facebook = "https://www.facebook.com/share/1FV6HZzVyd/"
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        accent.a.copy(alpha = 0.15f),
+                        Color.White.copy(alpha = 0.035f),
+                        accent.b.copy(alpha = 0.12f),
+                    ),
+                ),
+            )
+            .border(
+                1.dp,
+                Brush.linearGradient(
+                    listOf(
+                        accent.a.copy(alpha = 0.70f),
+                        Color.White.copy(alpha = 0.12f),
+                        accent.b.copy(alpha = 0.60f),
+                    ),
+                ),
+                shape,
+            ),
+    ) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .drawBehind {
+                    drawRect(
+                        Brush.radialGradient(
+                            listOf(accent.a.copy(alpha = 0.18f), Color.Transparent),
+                            center = Offset(size.width * 0.12f, 0f),
+                            radius = size.width * 0.9f,
+                        ),
+                    )
+                },
+        )
+        Column(Modifier.padding(18.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                DeveloperAvatar()
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Rahul Mandal",
+                            style = MaterialTheme.typography.titleLarge.copy(fontSize = 16.sp, fontWeight = FontWeight.Bold),
+                            color = TextPrimary,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        DevChip("CREATOR", accent.a)
+                    }
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        "App Developer & Maintainer",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 10.5.sp),
+                        color = TextSecondary,
+                    )
+                    Spacer(Modifier.height(7.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        DevChip("FOUNDER", accent.c)
+                        DevChip("VERIFIED", Success)
+                    }
+                }
+            }
+            Spacer(Modifier.height(15.dp))
+            Text(
+                "“Privacy-first recovery tools, engineered to keep every byte on your device.”",
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 10.5.sp, lineHeight = 16.sp),
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(13.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                Color.Transparent,
+                                accent.a.copy(alpha = 0.45f),
+                                accent.b.copy(alpha = 0.45f),
+                                Color.Transparent,
+                            ),
+                        ),
+                    ),
+            )
+            Spacer(Modifier.height(13.dp))
+            Text(
+                "CONTACT & SOCIAL",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, letterSpacing = 1.3.sp),
+                color = TextSecondary.copy(alpha = 0.85f),
+            )
+            Spacer(Modifier.height(9.dp))
+            DeveloperInfoRow(DevGlyph.EMAIL, "Email", email) {
+                openDeveloperLink(context, Intent.ACTION_SENDTO, "mailto:$email")
+            }
+            Spacer(Modifier.height(8.dp))
+            DeveloperInfoRow(DevGlyph.PHONE, "Phone", phone) {
+                openDeveloperLink(context, Intent.ACTION_DIAL, "tel:$phone")
+            }
+            Spacer(Modifier.height(8.dp))
+            DeveloperInfoRow(DevGlyph.GITHUB, "GitHub", "github.com/rmofficial") {
+                openDeveloperLink(context, Intent.ACTION_VIEW, github)
+            }
+            Spacer(Modifier.height(8.dp))
+            DeveloperInfoRow(DevGlyph.FACEBOOK, "Facebook", "Rahul Mandal") {
+                openDeveloperLink(context, Intent.ACTION_VIEW, facebook)
+            }
+            Spacer(Modifier.height(13.dp))
+            Text(
+                "© 2026 Rahul Mandal · All rights reserved",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.5.sp, letterSpacing = 0.4.sp),
+                color = TextSecondary.copy(alpha = 0.55f),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeveloperAvatar() {
+    val accent = LocalAccent.current
+    Box(Modifier.size(84.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.matchParentSize()) {
+            drawCircle(
+                Brush.radialGradient(
+                    listOf(accent.a.copy(alpha = 0.40f), Color.Transparent),
+                    center = center,
+                    radius = size.minDimension / 2,
+                ),
+                radius = size.minDimension / 2,
+            )
+        }
+        Box(
+            Modifier
+                .size(72.dp)
+                .clip(CircleShape)
+                .background(Brush.sweepGradient(listOf(accent.a, accent.b, accent.c, accent.a)))
+                .padding(2.5.dp)
+                .clip(CircleShape)
+                .background(Color(0xFF0A0E18)),
+        ) {
+            Image(
+                painter = painterResource(R.drawable.developer_rahul),
+                contentDescription = "Rahul Mandal",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().clip(CircleShape),
+            )
+        }
+        Row(
+            Modifier
+                .align(Alignment.BottomEnd)
+                .clip(RoundedCornerShape(50))
+                .background(Color(0xFF060A12))
+                .border(1.dp, Success.copy(alpha = 0.45f), RoundedCornerShape(50))
+                .padding(horizontal = 7.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            PulseDot(Success, 5.dp)
+            Text(
+                "ACTIVE",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 7.sp, letterSpacing = 0.7.sp),
+                color = Success,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DevChip(text: String, color: Color) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall.copy(
+            fontSize = 7.5.sp,
+            fontWeight = FontWeight.ExtraBold,
+            letterSpacing = 0.9.sp,
+        ),
+        color = color,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(color.copy(alpha = 0.12f))
+            .border(1.dp, color.copy(alpha = 0.3f), RoundedCornerShape(50))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    )
+}
+
+@Composable
+private fun DeveloperInfoRow(
+    glyph: DevGlyph,
+    label: String,
+    value: String,
+    onClick: () -> Unit,
+) {
+    val accent = LocalAccent.current
+    val shape = RoundedCornerShape(15.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Color.White.copy(alpha = 0.045f))
+            .border(1.dp, Color.White.copy(alpha = 0.07f), shape)
+            .pressClickable(onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(11.dp))
+                .background(Brush.linearGradient(listOf(accent.a.copy(alpha = 0.22f), accent.b.copy(alpha = 0.14f))))
+                .border(1.dp, accent.a.copy(alpha = 0.25f), RoundedCornerShape(11.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            DeveloperGlyph(glyph, Modifier.size(17.dp), accent.a)
+        }
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                label.uppercase(),
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp, letterSpacing = 1.1.sp),
+                color = TextSecondary.copy(alpha = 0.8f),
+            )
+            Spacer(Modifier.height(1.dp))
+            Text(
+                value,
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Medium),
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            "›",
+            style = MaterialTheme.typography.titleLarge.copy(fontSize = 17.sp),
+            color = accent.a.copy(alpha = 0.5f),
+        )
+    }
+}
+
+@Composable
+private fun DeveloperGlyph(kind: DevGlyph, modifier: Modifier = Modifier, tint: Color) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val sw = 1.7.dp.toPx()
+        val stroke = Stroke(width = sw, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        when (kind) {
+            DevGlyph.EMAIL -> {
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(w * 0.12f, h * 0.24f),
+                    size = Size(w * 0.76f, h * 0.52f),
+                    cornerRadius = CornerRadius(w * 0.10f),
+                    style = stroke,
+                )
+                drawLine(tint, Offset(w * 0.16f, h * 0.28f), Offset(w * 0.50f, h * 0.56f), sw, StrokeCap.Round)
+                drawLine(tint, Offset(w * 0.84f, h * 0.28f), Offset(w * 0.50f, h * 0.56f), sw, StrokeCap.Round)
+            }
+            DevGlyph.PHONE -> {
+                drawRoundRect(
+                    color = tint,
+                    topLeft = Offset(w * 0.29f, h * 0.10f),
+                    size = Size(w * 0.42f, h * 0.80f),
+                    cornerRadius = CornerRadius(w * 0.11f),
+                    style = stroke,
+                )
+                drawLine(tint, Offset(w * 0.43f, h * 0.20f), Offset(w * 0.57f, h * 0.20f), sw, StrokeCap.Round)
+                drawCircle(tint, radius = w * 0.035f, center = Offset(w * 0.50f, h * 0.80f))
+            }
+            DevGlyph.GITHUB -> {
+                drawCircle(tint, radius = w * 0.10f, center = Offset(w * 0.30f, h * 0.24f), style = stroke)
+                drawCircle(tint, radius = w * 0.10f, center = Offset(w * 0.30f, h * 0.76f), style = stroke)
+                drawCircle(tint, radius = w * 0.10f, center = Offset(w * 0.70f, h * 0.42f), style = stroke)
+                drawLine(tint, Offset(w * 0.30f, h * 0.34f), Offset(w * 0.30f, h * 0.66f), sw, StrokeCap.Round)
+                val branch = Path().apply {
+                    moveTo(w * 0.40f, h * 0.24f)
+                    lineTo(w * 0.56f, h * 0.24f)
+                    cubicTo(w * 0.66f, h * 0.24f, w * 0.70f, h * 0.30f, w * 0.70f, h * 0.32f)
+                }
+                drawPath(branch, tint, style = stroke)
+            }
+            DevGlyph.FACEBOOK -> {
+                drawLine(tint, Offset(w * 0.58f, h * 0.30f), Offset(w * 0.58f, h * 0.84f), sw, StrokeCap.Round)
+                val hook = Path().apply {
+                    moveTo(w * 0.58f, h * 0.36f)
+                    cubicTo(w * 0.58f, h * 0.20f, w * 0.70f, h * 0.14f, w * 0.78f, h * 0.19f)
+                }
+                drawPath(hook, tint, style = stroke)
+                drawLine(tint, Offset(w * 0.42f, h * 0.53f), Offset(w * 0.70f, h * 0.53f), sw, StrokeCap.Round)
+            }
+        }
+    }
+}
+
+private fun openDeveloperLink(context: Context, action: String, uri: String) {
+    runCatching { context.startActivity(Intent(action, Uri.parse(uri))) }
+        .onFailure { Toast.makeText(context, "No app available for this link", Toast.LENGTH_SHORT).show() }
 }
