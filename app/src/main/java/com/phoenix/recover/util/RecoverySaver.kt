@@ -31,28 +31,54 @@ object RecoverySaver {
     private const val FOLDER = "Phoenix Recover"
 
     fun save(context: Context, item: RecoveredFile, onBytes: (Long) -> Unit = {}): SavedItem? {
-        val file = listOfNotNull(item.scratchPath, item.sourcePath)
-            .map(::File)
-            .firstOrNull { it.exists() && it.canRead() }
-        val uri = item.contentUri?.let(Uri::parse)
-        if (file == null && uri == null) return null
-        val sourceSize = file?.length() ?: item.size
-        val open: () -> java.io.InputStream? = if (file != null) {
-            { runCatching { FileInputStream(file) }.getOrNull() }
-        } else {
-            { runCatching { context.contentResolver.openInputStream(uri!!) }.getOrNull() }
-        }
-        if (file == null && open() == null) return null
         val displayName = sanitize(item.name, item.kind)
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                saveToMediaStore(context, open, sourceSize, displayName, item, onBytes)
-            } else {
-                saveLegacy(context, open, sourceSize, displayName, item, onBytes)
+        val sources = buildList {
+            item.scratchPath?.let { add(fileSource(it)) }
+            item.sourcePath?.let { add(fileSource(it)) }
+            item.contentUri?.let { raw ->
+                val uri = runCatching { Uri.parse(raw) }.getOrNull()
+                if (uri != null) {
+                    add(
+                        Source(
+                            usable = { true },
+                            opener = {
+                                runCatching { context.contentResolver.openInputStream(uri) }.getOrNull()
+                            },
+                        ),
+                    )
+                }
             }
-        } catch (_: Exception) {
-            null
         }
+        for (source in sources) {
+            if (!source.isUsable()) continue
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                source.open()?.use { input ->
+                    saveToMediaStore(context, input, displayName, item, onBytes)
+                }?.let { return it }
+            }
+            // MediaStore can reject a write on some OEMs; fall back to a direct file
+            // write so a recoverable file is never lost to a provider quirk.
+            source.open()?.use { input ->
+                saveLegacy(context, input, displayName, item, onBytes)
+            }?.let { return it }
+        }
+        return null
+    }
+
+    private class Source(
+        private val usable: () -> Boolean,
+        private val opener: () -> java.io.InputStream?,
+    ) {
+        fun isUsable(): Boolean = usable()
+        fun open(): java.io.InputStream? = opener()
+    }
+
+    private fun fileSource(path: String): Source {
+        val file = File(path)
+        return Source(
+            usable = { file.exists() && file.canRead() && file.length() > 0 },
+            opener = { runCatching { FileInputStream(file) }.getOrNull() },
+        )
     }
 
     private fun sanitize(name: String, kind: MediaKind): String {
@@ -77,8 +103,7 @@ object RecoverySaver {
     @RequiresApi(Build.VERSION_CODES.Q)
     private fun saveToMediaStore(
         context: Context,
-        open: () -> java.io.InputStream?,
-        sourceSize: Long,
+        input: java.io.InputStream,
         displayName: String,
         item: RecoveredFile,
         onBytes: (Long) -> Unit,
@@ -94,24 +119,17 @@ object RecoverySaver {
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
-        val uri = resolver.insert(collection, values) ?: return null
+        val uri = runCatching { resolver.insert(collection, values) }.getOrNull() ?: return null
         try {
-            val input = open()
-            if (input == null) {
-                resolver.delete(uri, null, null)
+            val written = resolver.openOutputStream(uri)?.use { out ->
+                copy(input, out, onBytes)
+            } ?: 0L
+            if (written <= 0L) {
+                runCatching { resolver.delete(uri, null, null) }
                 return null
             }
-            var written = sourceSize
-            input.use { source ->
-                resolver.openOutputStream(uri)?.use { out ->
-                    written = copy(source, out, onBytes)
-                } ?: run {
-                    resolver.delete(uri, null, null)
-                    return null
-                }
-            }
             val done = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-            resolver.update(uri, done, null, null)
+            runCatching { resolver.update(uri, done, null, null) }
             return SavedItem(
                 id = item.id + ":" + System.currentTimeMillis(),
                 name = displayName,
@@ -129,8 +147,7 @@ object RecoverySaver {
 
     private fun saveLegacy(
         context: Context,
-        open: () -> java.io.InputStream?,
-        sourceSize: Long,
+        input: java.io.InputStream,
         displayName: String,
         item: RecoveredFile,
         onBytes: (Long) -> Unit,
@@ -139,14 +156,15 @@ object RecoverySaver {
         val dir = File(downloads, FOLDER)
         if (!dir.exists() && !dir.mkdirs()) return null
         val dest = uniqueFile(dir, displayName)
-        val input = open() ?: return null
         val written = try {
-            input.use { source ->
-                dest.outputStream().use { out ->
-                    copy(source, out, onBytes)
-                }
+            dest.outputStream().use { out ->
+                copy(input, out, onBytes)
             }
         } catch (_: Exception) {
+            runCatching { dest.delete() }
+            return null
+        }
+        if (written <= 0L) {
             runCatching { dest.delete() }
             return null
         }
@@ -158,7 +176,7 @@ object RecoverySaver {
             id = item.id + ":" + System.currentTimeMillis(),
             name = dest.name,
             kind = item.kind,
-            size = if (written > 0) written else sourceSize,
+            size = written,
             uri = uri,
             path = dest.absolutePath,
             savedAt = System.currentTimeMillis(),

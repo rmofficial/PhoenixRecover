@@ -138,6 +138,7 @@ internal object NativeEngine {
                             detail = detail,
                             scratchPath = path.ifEmpty { null },
                             format = format,
+                            partial = detail.contains("partial", ignoreCase = true),
                         ),
                     ),
                 )

@@ -50,6 +50,8 @@ internal object Bytes {
 
     fun u16be(b: ByteArray, i: Int): Int = (u8(b, i) shl 8) or u8(b, i + 1)
 
+    fun u16le(b: ByteArray, i: Int): Int = u8(b, i) or (u8(b, i + 1) shl 8)
+
     fun u32be(b: ByteArray, i: Int): Long =
         (u8(b, i).toLong() shl 24) or (u8(b, i + 1).toLong() shl 16) or
             (u8(b, i + 2).toLong() shl 8) or u8(b, i + 3).toLong()
@@ -57,6 +59,12 @@ internal object Bytes {
     fun u32le(b: ByteArray, i: Int): Long =
         u8(b, i).toLong() or (u8(b, i + 1).toLong() shl 8) or
             (u8(b, i + 2).toLong() shl 16) or (u8(b, i + 3).toLong() shl 24)
+
+    fun u64le(b: ByteArray, i: Int): Long {
+        var value = 0L
+        for (k in 7 downTo 0) value = (value shl 8) or u8(b, i + k).toLong()
+        return value
+    }
 
     fun ascii(b: ByteArray, i: Int, len: Int): String {
         if (i < 0 || i + len > b.size) return ""

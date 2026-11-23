@@ -17,11 +17,11 @@ data class DetectedFile(
  */
 object Sniffer {
 
-    private val imageExt = setOf("jpg", "jpeg", "jfif", "png", "gif", "webp", "bmp", "heic", "heif", "avif", "tif", "tiff", "dng", "raw", "cr2", "nef", "arw", "orf", "rw2")
-    private val videoExt = setOf("mp4", "mov", "3gp", "mkv", "webm", "avi", "m4v", "flv", "wmv", "ts", "mpg", "mpeg")
-    private val audioExt = setOf("mp3", "wav", "flac", "ogg", "oga", "amr", "m4a", "aac", "opus", "wma", "mid")
-    private val docExt = setOf("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf", "db", "sqlite", "json", "xml")
-    private val archiveExt = setOf("zip", "rar", "7z", "apk", "tar", "gz", "iso", "jar")
+    private val imageExt = setOf("jpg", "jpeg", "jfif", "png", "gif", "webp", "bmp", "heic", "heif", "avif", "tif", "tiff", "dng", "raw", "cr2", "nef", "arw", "orf", "rw2", "psd", "psb", "ico", "cur", "svg", "jxl")
+    private val videoExt = setOf("mp4", "mov", "3gp", "mkv", "webm", "avi", "m4v", "flv", "wmv", "ts", "mpg", "mpeg", "asf", "mts", "m2ts", "vob", "rmvb", "divx")
+    private val audioExt = setOf("mp3", "wav", "flac", "ogg", "oga", "amr", "m4a", "aac", "opus", "wma", "mid", "midi", "m4b", "m4r", "aiff", "aif", "ape", "ac3")
+    private val docExt = setOf("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf", "db", "sqlite", "json", "xml", "html", "htm", "epub", "odt", "ods", "odp", "md", "log")
+    private val archiveExt = setOf("zip", "rar", "7z", "apk", "tar", "gz", "iso", "jar", "bz2", "xz", "tgz", "tbz2", "zst", "cab")
 
     /** Extensions worth opening during a scan; avoids reading every random file. */
     val candidateExtensions: Set<String> = imageExt + videoExt + audioExt + docExt + archiveExt
@@ -84,6 +84,25 @@ object Sniffer {
             "7z" -> "application/x-7z-compressed"
             "apk" -> "application/vnd.android.package-archive"
             "db", "sqlite" -> "application/x-sqlite3"
+            "tif", "tiff" -> "image/tiff"
+            "cr2" -> "image/x-canon-cr2"
+            "nef" -> "image/x-nikon-nef"
+            "arw" -> "image/x-sony-arw"
+            "dng" -> "image/x-adobe-dng"
+            "psd", "psb" -> "image/vnd.adobe.photoshop"
+            "ico", "cur" -> "image/x-icon"
+            "flv" -> "video/x-flv"
+            "wmv", "asf" -> "video/x-ms-wmv"
+            "ts", "mts", "m2ts" -> "video/mp2t"
+            "aac" -> "audio/aac"
+            "mid", "midi" -> "audio/midi"
+            "gz", "tgz" -> "application/gzip"
+            "bz2", "tbz2" -> "application/x-bzip2"
+            "xz" -> "application/x-xz"
+            "rtf" -> "application/rtf"
+            "epub" -> "application/epub+zip"
+            "html", "htm" -> "text/html"
+            "txt", "md", "log" -> "text/plain"
             else -> "application/octet-stream"
         }
         return DetectedFile(ext.uppercase(), ext, mime, kind, 35)
@@ -157,6 +176,51 @@ object Sniffer {
         }
         if (u(0) == 0xD0 && u(1) == 0xCF && u(2) == 0x11 && u(3) == 0xE0) {
             return DetectedFile("OLE", "doc", "application/msword", MediaKind.DOCUMENT, 78)
+        }
+        if (n >= 8 && u(0) == 0x49 && u(1) == 0x49 && u(2) == 0x2A && u(3) == 0x00) {
+            return if (n >= 10 && a(8, 2) == "CR") {
+                DetectedFile("CR2", "cr2", "image/x-canon-cr2", MediaKind.IMAGE, 92)
+            } else {
+                DetectedFile("TIFF", "tif", "image/tiff", MediaKind.IMAGE, 92)
+            }
+        }
+        if (n >= 8 && u(0) == 0x4D && u(1) == 0x4D && u(2) == 0x00 && u(3) == 0x2A) {
+            return DetectedFile("TIFF", "tif", "image/tiff", MediaKind.IMAGE, 92)
+        }
+        if (a(0, 4) == "8BPS") {
+            return DetectedFile("PSD", "psd", "image/vnd.adobe.photoshop", MediaKind.IMAGE, 92)
+        }
+        if (u(0) == 0x00 && u(1) == 0x00 && u(2) == 0x01 && u(3) == 0x00) {
+            return DetectedFile("ICO", "ico", "image/x-icon", MediaKind.IMAGE, 80)
+        }
+        if (a(0, 3) == "FLV") {
+            return DetectedFile("FLV", "flv", "video/x-flv", MediaKind.VIDEO, 90)
+        }
+        if (n >= 16 && u(0) == 0x30 && u(1) == 0x26 && u(2) == 0xB2 && u(3) == 0x75) {
+            return DetectedFile("WMV", "wmv", "video/x-ms-wmv", MediaKind.VIDEO, 90)
+        }
+        if (n >= 188 * 3 && u(0) == 0x47 && u(188) == 0x47 && u(376) == 0x47) {
+            return DetectedFile("MPEG-TS", "ts", "video/mp2t", MediaKind.VIDEO, 84)
+        }
+        if (n >= 7 && u(0) == 0xFF && (u(1) and 0xF6) == 0xF0) {
+            return DetectedFile("AAC", "aac", "audio/aac", MediaKind.AUDIO, 84)
+        }
+        if (a(0, 4) == "MThd") {
+            return DetectedFile("MIDI", "mid", "audio/midi", MediaKind.AUDIO, 90)
+        }
+        if (n >= 3 && u(0) == 0x1F && u(1) == 0x8B && u(2) == 0x08) {
+            return DetectedFile("GZIP", "gz", "application/gzip", MediaKind.ARCHIVE, 88)
+        }
+        if (a(0, 3) == "BZh") {
+            return DetectedFile("BZIP2", "bz2", "application/x-bzip2", MediaKind.ARCHIVE, 88)
+        }
+        if (n >= 6 && u(0) == 0xFD && u(1) == 0x37 && u(2) == 0x7A && u(3) == 0x58 &&
+            u(4) == 0x5A && u(5) == 0x00
+        ) {
+            return DetectedFile("XZ", "xz", "application/x-xz", MediaKind.ARCHIVE, 90)
+        }
+        if (a(0, 5) == "{\\rtf") {
+            return DetectedFile("RTF", "rtf", "application/rtf", MediaKind.DOCUMENT, 82)
         }
         return null
     }

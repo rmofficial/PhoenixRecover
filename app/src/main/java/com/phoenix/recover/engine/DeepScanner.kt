@@ -19,19 +19,61 @@ class DeepScanner(private val options: DeepScanOptions) {
         )
         val SKIP_DIRS = setOf(
             "obb", ".git", "node_modules", "__pycache__", "com.phoenix.recover",
-            "lost+found", ".thumbnails", "thumbnails",
+            "lost+found",
+        )
+        // Directories inside Android/data and Android/media that only hold caches or
+        // binaries. Skipping them keeps the new Android-tree traversal fast.
+        val ANDROID_APP_SKIP = setOf(
+            "cache", "code_cache", "no_backup", "lib", "oat", "app_webview",
         )
         val KNOWN_RELATIVE = listOf(
-            ".trashed", ".Trash", ".trash", ".trashes", ".recycle", ".recyclebin", ".RecycleBin",
-            ".deleted", "\$RECYCLE.BIN", "#recycle", "LOST.DIR", "Trash", "Recycle Bin",
+            ".trashed", ".Trash", ".Trash-1000", ".trash", ".trashes", ".recycle", ".recyclebin",
+            ".RecycleBin", ".deleted", "\$RECYCLE.BIN", "#recycle", "LOST.DIR", "Trash", "Recycle Bin",
             "Pictures/.trashed", "Pictures/.trash", "Pictures/Trash",
-            "Pictures/Recently Deleted", "Movies/.trashed", "Movies/.trash", "Movies/Trash",
+            "Pictures/Recently Deleted", "Pictures/.thumbnails",
+            "Movies/.trashed", "Movies/.trash", "Movies/Trash",
             "DCIM/.trashed", "DCIM/.Trash", "DCIM/.trash", "DCIM/Trash",
-            "DCIM/.trashes", "DCIM/Recently Deleted", "Download/.trashed", "Download/Trash",
+            "DCIM/.trashes", "DCIM/Recently Deleted", "DCIM/.thumbnails",
+            "Download/.trashed", "Download/Trash",
             "MIUI/Gallery/cloud/.trashBin", "MIUI/Gallery/.trashBin", "MIUI/Gallery/.trash",
+            "MIUI/Gallery/cloud/.trash",
+            // WhatsApp keeps deleted media in its own .Trashed folder — not in the
+            // MediaStore trash — so this path must be scanned explicitly.
+            "WhatsApp/Media/.Trashed", "WhatsApp/Media/.trash",
+            "WhatsApp/Media/.Statuses",
+            "Android/media/com.whatsapp/WhatsApp/Media/.Trashed",
+            "Android/media/com.whatsapp/WhatsApp/Media/.trash",
             "Android/media/com.whatsapp/WhatsApp/Media/.Statuses",
+            "Android/data/com.whatsapp/WhatsApp/Media/.Trashed",
+            "Android/data/com.whatsapp/WhatsApp/Media/.trash",
             "Android/data/com.whatsapp/WhatsApp/Media/.Statuses",
             "Android/media/org.telegram.messenger/Telegram/Telegram Images",
+            "Android/media/org.telegram.messenger/Telegram/Telegram Video",
+            "Android/media/org.telegram.messenger/Telegram/Telegram Documents",
+            "Android/media/org.telegram.messenger/Telegram/Telegram Audio",
+            "Android/media/org.telegram.messenger/Telegram/Telegram Voice",
+            "Android/media/org.telegram.messenger/Telegram/Telegram Animated",
+            // Google Photos, Samsung, MIUI and other OEM galleries keep their own bins.
+            "Android/data/com.google.android.apps.photos/files/trash",
+            "Android/data/com.google.android.apps.photos/files/trash/trash",
+            "Android/data/com.google.android.apps.photos/files/restore",
+            "Android/data/com.google.android.apps.photos/cache/trash",
+            "Android/data/com.sec.android.gallery3d/files/Trash",
+            "Android/data/com.sec.android.gallery3d/cache",
+            "Android/data/com.miui.gallery/files/trash",
+            "Android/data/com.coloros.gallery3d/files/Trash",
+            "Android/data/com.oppo.gallery3d/files/Trash",
+            "Android/data/com.vivo.gallery/files/Trash",
+            "Android/data/com.instagram.android/files/trash",
+            "Android/data/com.facebook.katana/cache/image",
+            "Android/data/com.snapchat.android/cache",
+            "Android/media/com.instagram.android",
+            "Android/media/com.google.android.apps.photos",
+            "Android/media/com.sec.android.gallery3d",
+            "Android/data/org.telegram.messenger/cache",
+            "Android/data/org.telegram.messenger/files",
+            "Android/data/org.telegram.plus/cache",
+            "Android/data/org.thoughtcrime.securesms/cache",
         )
         val MEDIA_KINDS = setOf(MediaKind.IMAGE, MediaKind.VIDEO, MediaKind.AUDIO)
     }
@@ -103,6 +145,7 @@ class DeepScanner(private val options: DeepScanOptions) {
             }
             if (children == null) continue
             dirsVisited++
+            val insideAndroidApp = isAndroidAppTree(dir)
 
             for (child in children) {
                 if (isCancelled()) {
@@ -113,7 +156,7 @@ class DeepScanner(private val options: DeepScanOptions) {
                 if (seenFiles.size >= options.maxResults) break
                 val name = child.name
                 if (child.isDirectory) {
-                    if (current.depth < options.maxDepth && name !in SKIP_DIRS && !name.equals("Android", true)) {
+                    if (current.depth < options.maxDepth && shouldDescend(dir, name, insideAndroidApp)) {
                         queue.addLast(WalkDir(child, current.depth + 1))
                     }
                     continue
@@ -272,5 +315,26 @@ class DeepScanner(private val options: DeepScanOptions) {
         val parent = file.parentFile ?: return false
         val key = parent.absolutePath
         return noMediaCache.getOrPut(key) { File(parent, ".nomedia").exists() }
+    }
+
+    /**
+     * The `Android` tree used to be skipped entirely, which hid WhatsApp/Telegram
+     * deleted media under `Android/media/<app>/.Trashed`. We now descend into it but
+     * only through `media` and `data`, pruning cache/binary folders as we go.
+     */
+    private fun shouldDescend(parent: File, name: String, insideAndroidApp: Boolean): Boolean {
+        val lower = name.lowercase()
+        if (lower in SKIP_DIRS) return false
+        if (lower == "android") return true
+        if (parent.name.equals("Android", true)) {
+            return lower == "media" || lower == "data"
+        }
+        if (insideAndroidApp && lower in ANDROID_APP_SKIP) return false
+        return true
+    }
+
+    private fun isAndroidAppTree(dir: File): Boolean {
+        val path = dir.absolutePath.replace('\\', '/').lowercase()
+        return path.contains("/android/media/") || path.contains("/android/data/")
     }
 }

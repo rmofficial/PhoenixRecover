@@ -68,4 +68,39 @@ class DeepScannerTest {
             root.deleteRecursively()
         }
     }
+
+    @Test
+    fun findsWhatsAppDeletedMediaInsideAndroidMedia() {
+        val root = Files.createTempDirectory("phoenix-scan").toFile()
+        try {
+            val trash = File(
+                root,
+                "Android/media/com.whatsapp/WhatsApp/Media/.Trashed",
+            ).apply { mkdirs() }
+            File(trash, "IMG-20240101-WA0001.jpg").writeBytes(jpeg())
+
+            // A live WhatsApp image in the same tree must not be reported as deleted.
+            val live = File(
+                root,
+                "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images",
+            ).apply { mkdirs() }
+            File(live, "IMG-20240102-WA0002.jpg").writeBytes(jpeg())
+
+            val found = mutableListOf<RecoveredFile>()
+            val options = DeepScanOptions(minSize = 4, maxDepth = 16).apply {
+                roots.add(root.absolutePath)
+            }
+            DeepScanner(options).scan { event ->
+                if (event is ScanEvent.Found) found += event.item
+            }
+
+            assertEquals(1, found.size)
+            val photo = found.first()
+            assertEquals(Origin.TRASH, photo.origin)
+            assertEquals("IMG-20240101-WA0001.jpg", photo.name)
+            assertEquals(MediaKind.IMAGE, photo.kind)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
 }

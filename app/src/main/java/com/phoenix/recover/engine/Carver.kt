@@ -25,6 +25,11 @@ class Carver(
         val AMR_WB = intArrayOf(18, 24, 33, 37, 41, 47, 51, 59, 61, 6, 7, 7, 7, 7, 7, 1)
         val ZIP_EOCD = byteArrayOf(0x50, 0x4B, 0x05, 0x06)
         val PDF_EOF = "%%EOF".toByteArray(Charsets.ISO_8859_1)
+        val TAIL_FORMATS = setOf(
+            "PNG", "MP4", "MOV", "3GP", "M4A", "HEIC", "AVI", "WAV", "WebP",
+            "SQLite", "Matroska", "TIFF", "CR2", "PSD", "FLV", "WMV",
+            "MPEG-TS", "MIDI",
+        )
     }
 
     fun carve(
@@ -85,7 +90,7 @@ class Carver(
                 if (sig != null) {
                     val fileStart = offset + i - sig.headerOffset
                     if (fileStart >= 0 && fileStart < scanEnd) {
-                        val end = findEnd(sig, fileStart, isCancelled)
+                        val (end, partial) = findEnd(sig, fileStart, isCancelled)
                         if (end > fileStart + 16) {
                             val info = classify(sig, fileStart, end)
                             val size = end - fileStart
@@ -97,7 +102,7 @@ class Carver(
                                     outputLimitHit = true
                                     break
                                 }
-                                val item = buildItem(info, fileStart, end, outputDir)
+                                val item = buildItem(info, fileStart, end, partial)
                                 if (outputDir != null && options.writeOutput) {
                                     val out = writeRange(outputDir, item, fileStart, end, isCancelled)
                                     if (out != null) {
@@ -199,10 +204,16 @@ class Carver(
         return CarvedInfo(sig.format, sig.ext, sig.mime, sig.kind)
     }
 
-    private fun buildItem(info: CarvedInfo, start: Long, end: Long, outputDir: File?): RecoveredFile {
+    private fun buildItem(info: CarvedInfo, start: Long, end: Long, partial: Boolean): RecoveredFile {
         val size = end - start
         val safeFormat = info.format.replace(' ', '_').replace("-", "")
         val name = "${safeFormat}_${start.toString(16)}_${(start / 1024).toString(16)}.${info.ext}"
+        var confidence = if (info.format == "JPEG" || info.format == "PNG") 96 else 88
+        if (partial) confidence = maxOf(40, confidence - 18)
+        val detail = buildString {
+            append("Offset 0x${start.toString(16)} · ${info.format}")
+            if (partial) append(" · partial (end marker missing)")
+        }
         return RecoveredFile(
             id = "carve:${start}:${info.format}:$end",
             name = name,
@@ -210,11 +221,12 @@ class Carver(
             size = size,
             origin = Origin.CARVE,
             mime = info.mime,
-            confidence = if (info.format == "JPEG" || info.format == "PNG") 96 else 88,
+            confidence = confidence,
             offset = start,
-            detail = "Offset 0x${start.toString(16)} · ${info.format}",
+            detail = detail,
             format = info.format,
             scratchPath = null,
+            partial = partial,
         )
     }
 
@@ -244,22 +256,29 @@ class Carver(
         }
     }
 
-    private fun findEnd(sig: FileSignature, start: Long, isCancelled: () -> Boolean): Long {
+    private fun findEnd(
+        sig: FileSignature,
+        start: Long,
+        isCancelled: () -> Boolean,
+    ): Pair<Long, Boolean> {
         val cap = min(source.length, start + min(sig.maxSize, options.maxFileSize))
-        if (cap <= start) return -1
-        return try {
+        if (cap <= start) return -1L to false
+        var sawSos = false
+        val end = try {
             when (sig.endMode) {
-                EndMode.FOOTER -> findFooter(start + sig.header.size, sig.footer ?: return -1, cap, isCancelled)
-                EndMode.JPEG_SCAN -> parseJpeg(start, cap, isCancelled)
+                EndMode.FOOTER -> sig.footer?.let {
+                    findFooter(start + sig.header.size, it, cap, isCancelled)
+                } ?: -1
+                EndMode.JPEG_SCAN -> parseJpeg(start, cap, isCancelled) { sawSos = true }
                 EndMode.RIFF -> {
                     val head = ByteArray(8)
-                    if (readFully(start + 4, head, 4) != 4) return -1
+                    if (readFully(start + 4, head, 4) != 4) return -1L to false
                     val size = Bytes.u32le(head, 0) + 8
                     if (size in 12..(cap - start)) start + size else -1
                 }
                 EndMode.BMP_SIZE -> {
                     val head = ByteArray(4)
-                    if (readFully(start + 2, head, 4) != 4) return -1
+                    if (readFully(start + 2, head, 4) != 4) return -1L to false
                     val size = Bytes.u32le(head, 0)
                     if (size in 26..(cap - start)) start + size else -1
                 }
@@ -271,14 +290,67 @@ class Carver(
                 EndMode.AMR_FRAMES -> parseAmr(start, cap)
                 EndMode.EBML -> parseEbml(start, cap, isCancelled)
                 EndMode.SQLITE -> parseSqlite(start, cap)
+                EndMode.TIFF_IFD -> parseTiff(start, cap)
+                EndMode.PSD_SIZE -> parsePsd(start, cap)
+                EndMode.ICO_SIZE -> parseIco(start, cap)
+                EndMode.FLV_TAGS -> parseFlv(start, cap, isCancelled)
+                EndMode.ASF_OBJECTS -> parseAsf(start, cap)
+                EndMode.TS_PACKETS -> parseTs(start, cap, isCancelled)
+                EndMode.ADTS_FRAMES -> parseAdts(start, cap, isCancelled)
+                EndMode.MIDI_TRACKS -> parseMidi(start, cap, isCancelled)
                 EndMode.NEXT_SIGNATURE -> findNextHeader(start + sig.header.size, cap, isCancelled)
             }
         } catch (_: Exception) {
-            -1
+            -1L
         }
+        if (end > start + 16) return end to false
+        val fallback = bestEffortEnd(sig, start, cap, sawSos, isCancelled)
+        return if (fallback > start + 16) fallback to true else -1L to false
     }
 
-    private fun parseJpeg(start: Long, cap: Long, isCancelled: () -> Boolean): Long {
+    private fun shouldAttemptPartial(sig: FileSignature): Boolean = sig.format != "BMP"
+
+    private fun allowsTailToCap(sig: FileSignature, jpegSawSos: Boolean): Boolean {
+        if (sig.format == "JPEG") return jpegSawSos
+        return sig.format in TAIL_FORMATS
+    }
+
+    private fun partialCap(sig: FileSignature, start: Long, cap: Long): Long {
+        val extra = when (sig.kind) {
+            MediaKind.IMAGE -> 64L * 1024 * 1024
+            MediaKind.VIDEO -> 512L * 1024 * 1024
+            MediaKind.AUDIO -> 128L * 1024 * 1024
+            MediaKind.DOCUMENT, MediaKind.ARCHIVE -> 256L * 1024 * 1024
+            else -> 64L * 1024 * 1024
+        }
+        return min(cap, start + extra)
+    }
+
+    private fun bestEffortEnd(
+        sig: FileSignature,
+        start: Long,
+        cap: Long,
+        jpegSawSos: Boolean,
+        isCancelled: () -> Boolean,
+    ): Long {
+        if (!shouldAttemptPartial(sig)) return -1
+        if (cap - start < maxOf(options.minSize, 4096)) return -1
+        val tail = allowsTailToCap(sig, jpegSawSos)
+        // NEXT_SIGNATURE already scanned the full window in findEnd; repeating it
+        // here would double the work on large footerless files.
+        if (!tail && sig.endMode == EndMode.NEXT_SIGNATURE) return -1
+        val limit = if (tail) partialCap(sig, start, cap) else cap
+        val next = findNextHeader(start + sig.header.size, limit, isCancelled)
+        if (next > start + 1024) return next
+        return if (tail) limit else -1
+    }
+
+    private fun parseJpeg(
+        start: Long,
+        cap: Long,
+        isCancelled: () -> Boolean,
+        onSos: () -> Unit = {},
+    ): Long {
         var p = start + 2
         val marker = ByteArray(2)
         while (p + 2 <= cap) {
@@ -304,6 +376,7 @@ class Carver(
             val segLen = Bytes.u16be(lenBytes, 0)
             if (segLen < 2) return -1
             if (m == 0xDA) {
+                onSos()
                 var q = p + 2 + segLen
                 val buf = ByteArray(CHUNK + 2)
                 while (q < cap) {
@@ -602,6 +675,279 @@ class Carver(
         if (pageCount <= 0) return -1
         val end = start + pageSize.toLong() * pageCount
         return if (end <= cap) end else -1
+    }
+
+    private fun parseTiff(start: Long, cap: Long): Long {
+        val head = ByteArray(8)
+        if (readFully(start, head, 8) < 8) return -1
+        val little = Bytes.u8(head, 0) == 0x49 && Bytes.u8(head, 1) == 0x49
+        val big = Bytes.u8(head, 0) == 0x4D && Bytes.u8(head, 1) == 0x4D
+        if (!little && !big) return -1
+        if ((little && (Bytes.u8(head, 2) != 0x2A || Bytes.u8(head, 3) != 0x00)) ||
+            (big && (Bytes.u8(head, 2) != 0x00 || Bytes.u8(head, 3) != 0x2A))
+        ) {
+            return -1
+        }
+        fun rd16(b: ByteArray, i: Int): Int =
+            if (little) Bytes.u8(b, i) or (Bytes.u8(b, i + 1) shl 8) else Bytes.u16be(b, i)
+        fun rd32(b: ByteArray, i: Int): Long =
+            if (little) Bytes.u32le(b, i) else Bytes.u32be(b, i)
+
+        val pending = ArrayDeque<Long>()
+        pending.addLast(rd32(head, 4))
+        val visited = HashSet<Long>()
+        var best = start + 8
+        var processed = 0
+        while (pending.isNotEmpty() && processed++ < 2048) {
+            val ifd = pending.removeLast()
+            if (ifd < 8 || !visited.add(ifd)) continue
+            val dirPos = start + ifd
+            if (dirPos + 2 > cap) continue
+            val countBytes = ByteArray(2)
+            if (readFully(dirPos, countBytes, 2) < 2) continue
+            val count = rd16(countBytes, 0)
+            if (count <= 0 || count > 4096) continue
+            val entriesLen = count * 12L
+            if (dirPos + 2 + entriesLen + 4 > cap) continue
+            val entries = ByteArray((entriesLen + 4).toInt())
+            if (readFully(dirPos + 2, entries, entries.size) < entries.size) continue
+            val stripOffsets = ArrayList<Long>()
+            val stripCounts = ArrayList<Long>()
+            for (e in 0 until count) {
+                val base = e * 12
+                val tag = rd16(entries, base)
+                val type = rd16(entries, base + 2)
+                val itemCount = rd32(entries, base + 4)
+                if (itemCount <= 0 || itemCount > 100000) continue
+                val typeSize = when (type) {
+                    1, 2, 6, 7 -> 1
+                    3, 8 -> 2
+                    4, 9, 11 -> 4
+                    5, 10, 12 -> 8
+                    else -> continue
+                }
+                val total = itemCount * typeSize
+                val offsetTag = tag == 273 || tag == 324
+                val countTag = tag == 279 || tag == 325
+                if (total <= 4) {
+                    if (offsetTag || countTag) {
+                        val value = if (typeSize == 2) rd16(entries, base + 8).toLong()
+                        else rd32(entries, base + 8)
+                        if (offsetTag) stripOffsets.add(value) else stripCounts.add(value)
+                    }
+                    continue
+                }
+                val dataOffset = rd32(entries, base + 8)
+                if (dataOffset <= 0) continue
+                if (tag == 330 || tag == 34665 || tag == 34853 || tag == 40965) {
+                    val childPos = start + dataOffset
+                    if (childPos + 4 <= cap) {
+                        val child = ByteArray(4)
+                        if (readFully(childPos, child, 4) == 4) pending.addLast(rd32(child, 0))
+                    }
+                }
+                if (offsetTag || countTag) {
+                    val tableBytes = min(total, 8L * 1024 * 1024)
+                    val tablePos = start + dataOffset
+                    if (tablePos + tableBytes > cap) continue
+                    val entriesToRead = (tableBytes / typeSize).toInt()
+                    val table = ByteArray(tableBytes.toInt())
+                    if (readFully(tablePos, table, table.size) < table.size) continue
+                    for (k in 0 until entriesToRead) {
+                        val item = k * typeSize
+                        val value = if (typeSize == 2) rd16(table, item).toLong() else rd32(table, item)
+                        if (tag == 273 || tag == 324) stripOffsets.add(value) else stripCounts.add(value)
+                    }
+                    continue
+                }
+                val dataEnd = start + dataOffset + total
+                if (dataEnd > best && dataEnd <= cap) best = dataEnd
+            }
+            val pairs = min(stripOffsets.size, stripCounts.size)
+            for (k in 0 until pairs) {
+                if (stripOffsets[k] <= 0 || stripCounts[k] <= 0) continue
+                val dataEnd = start + stripOffsets[k] + stripCounts[k]
+                if (dataEnd > best && dataEnd <= cap) best = dataEnd
+            }
+            pending.addLast(rd32(entries, entriesLen.toInt()))
+        }
+        return if (best > start + 16) best else -1
+    }
+
+    private fun parsePsd(start: Long, cap: Long): Long {
+        val head = ByteArray(26)
+        if (readFully(start, head, 26) < 26) return -1
+        if (Bytes.ascii(head, 0, 4) != "8BPS") return -1
+        var p = start + 26
+        repeat(4) {
+            val lenBytes = ByteArray(4)
+            if (p + 4 > cap) return -1
+            if (readFully(p, lenBytes, 4) < 4) return -1
+            val len = Bytes.u32be(lenBytes, 0)
+            p += 4
+            if (len < 0 || p + len > cap) return -1
+            p += len
+        }
+        return if (p > start + 26) p else -1
+    }
+
+    private fun parseIco(start: Long, cap: Long): Long {
+        val head = ByteArray(6)
+        if (readFully(start, head, 6) < 6) return -1
+        val count = Bytes.u16le(head, 4)
+        if (count <= 0 || count > 1024) return -1
+        val dirLen = count * 16L
+        if (start + 6 + dirLen > cap) return -1
+        val dir = ByteArray(dirLen.toInt())
+        if (readFully(start + 6, dir, dir.size) < dir.size) return -1
+        var end = start + 6 + dirLen
+        for (e in 0 until count) {
+            val base = e * 16
+            val size = Bytes.u32le(dir, base + 8)
+            val offset = Bytes.u32le(dir, base + 12)
+            if (size <= 0 || offset <= 0) continue
+            val itemEnd = start + offset + size
+            if (itemEnd <= cap && itemEnd > end) end = itemEnd
+        }
+        return if (end > start + 16) end else -1
+    }
+
+    private fun parseFlv(start: Long, cap: Long, isCancelled: () -> Boolean): Long {
+        val head = ByteArray(13)
+        if (readFully(start, head, 13) < 13) return -1
+        if (Bytes.ascii(head, 0, 3) != "FLV") return -1
+        val dataOffset = Bytes.u32be(head, 5)
+        if (dataOffset < 9 || dataOffset > 4096) return -1
+        var p = start + dataOffset + 4
+        var last = p
+        var guard = 0
+        while (p + 11 <= cap && guard++ < 4_000_000) {
+            if (isCancelled()) return if (last > start + 16) last else -1
+            val th = ByteArray(11)
+            if (readFully(p, th, 11) < 11) break
+            val type = Bytes.u8(th, 0)
+            if (type != 8 && type != 9 && type != 18) break
+            val dataSize = (Bytes.u8(th, 1).toLong() shl 16) or
+                (Bytes.u8(th, 2).toLong() shl 8) or Bytes.u8(th, 3).toLong()
+            val tagEnd = p + 11 + dataSize + 4
+            if (tagEnd > cap) break
+            last = tagEnd
+            p = tagEnd
+        }
+        return if (last > start + 16) last else -1
+    }
+
+    private fun parseAsf(start: Long, cap: Long): Long {
+        val head = ByteArray(24)
+        if (readFully(start, head, 24) < 24) return -1
+        val headerSize = Bytes.u64le(head, 16)
+        if (headerSize < 30 || headerSize > cap - start) return -1
+        val dataPos = start + headerSize
+        if (dataPos + 24 > cap) return if (dataPos > start + 16) dataPos else -1
+        val dataHead = ByteArray(24)
+        if (readFully(dataPos, dataHead, 24) < 24) {
+            return if (dataPos > start + 16) dataPos else -1
+        }
+        val dataGuid = byteArrayOf(
+            0x36, 0x26, 0xB2.toByte(), 0x75, 0x8E.toByte(), 0x66, 0xCF.toByte(), 0x11,
+            0xA6.toByte(), 0xD9.toByte(), 0x00, 0xAA.toByte(), 0x00, 0x62, 0xCE.toByte(), 0x6C,
+        )
+        val isData = dataGuid.indices.all { dataHead[it] == dataGuid[it] }
+        val dataSize = Bytes.u64le(dataHead, 16)
+        if (isData && dataSize >= 24 && dataPos + dataSize <= cap) return dataPos + dataSize
+        return if (dataPos > start + 16) dataPos else -1
+    }
+
+    private fun parseTs(start: Long, cap: Long, isCancelled: () -> Boolean): Long {
+        var packet = 188
+        fun syncAt(pos: Long): Boolean {
+            val b = ByteArray(1)
+            return readFully(pos, b, 1) == 1 && Bytes.u8(b, 0) == 0x47
+        }
+        if (!(syncAt(start + 188) && syncAt(start + 376))) {
+            if (syncAt(start + 192) && syncAt(start + 384)) {
+                packet = 192
+            } else if (syncAt(start + 204) && syncAt(start + 408)) {
+                packet = 204
+            }
+        }
+        val chunk = 256 * 1024
+        val buf = ByteArray(chunk)
+        var pos = start
+        var last = start
+        var misses = 0
+        while (pos < cap) {
+            if (isCancelled()) return if (last > start + packet * 3) last else -1
+            val want = min(chunk.toLong(), cap - pos).toInt()
+            val n = readFully(pos, buf, want)
+            if (n < packet) break
+            var i = 0
+            var chunkLast = last
+            while (i + packet <= n) {
+                if (Bytes.u8(buf, i) != 0x47) {
+                    if (++misses > 2) break
+                    i++
+                    continue
+                }
+                misses = 0
+                i += packet
+                chunkLast = pos + i
+            }
+            if (misses > 2) {
+                if (chunkLast > last) last = chunkLast
+                break
+            }
+            if (chunkLast > last) {
+                last = chunkLast
+                pos = last
+            } else {
+                val advance = n - (n % packet)
+                if (advance <= 0) break
+                pos += advance
+            }
+        }
+        return if (last > start + packet * 3) last else -1
+    }
+
+    private fun parseAdts(start: Long, cap: Long, isCancelled: () -> Boolean): Long {
+        var p = start
+        var last = -1L
+        var frames = 0
+        while (p + 7 <= cap) {
+            if (isCancelled()) return if (frames >= 2) last else -1
+            val h = ByteArray(7)
+            if (readFully(p, h, 7) < 7) break
+            if (Bytes.u8(h, 0) != 0xFF || (Bytes.u8(h, 1) and 0xF6) != 0xF0) break
+            val frameLen = ((Bytes.u8(h, 3) and 0x03) shl 11) or
+                (Bytes.u8(h, 4) shl 3) or (Bytes.u8(h, 5) shr 5)
+            if (frameLen < 7 || p + frameLen > cap) break
+            p += frameLen
+            last = p
+            frames++
+        }
+        return if (frames >= 2 && last > 0) last else -1
+    }
+
+    private fun parseMidi(start: Long, cap: Long, isCancelled: () -> Boolean): Long {
+        val head = ByteArray(8)
+        if (readFully(start, head, 8) < 8) return -1
+        if (Bytes.ascii(head, 0, 4) != "MThd") return -1
+        val headerLen = Bytes.u32be(head, 4)
+        if (headerLen < 6 || start + 8 + headerLen > cap) return -1
+        var p = start + 8 + headerLen
+        var last = p
+        var guard = 0
+        while (p + 8 <= cap && guard++ < 200_000) {
+            if (isCancelled()) return if (last > start + 16) last else -1
+            val ch = ByteArray(8)
+            if (readFully(p, ch, 8) < 8) break
+            if (Bytes.ascii(ch, 0, 4) != "MTrk") break
+            val len = Bytes.u32be(ch, 4)
+            if (len < 0 || p + 8 + len > cap) break
+            p += 8 + len
+            last = p
+        }
+        return if (last > start + 16) last else -1
     }
 
     private fun findNextHeader(from: Long, maxEnd: Long, isCancelled: () -> Boolean): Long {

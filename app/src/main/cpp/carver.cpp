@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <fcntl.h>
@@ -49,6 +50,14 @@ int64_t u32le(const uint8_t* b, int i) {
            (static_cast<int64_t>(u8(b, i + 1)) << 8) |
            (static_cast<int64_t>(u8(b, i + 2)) << 16) |
            (static_cast<int64_t>(u8(b, i + 3)) << 24);
+}
+
+int64_t u64le(const uint8_t* b, int i) {
+    int64_t value = 0;
+    for (int k = 7; k >= 0; --k) {
+        value = (value << 8) | static_cast<int64_t>(u8(b, i + k));
+    }
+    return value;
 }
 
 std::string ascii(const uint8_t* b, int i, int len, int n) {
@@ -166,7 +175,8 @@ public:
                 if (sig != nullptr) {
                     const int64_t fileStart = offset + i - sig->headerOffset;
                     if (fileStart >= 0 && fileStart < scanEnd) {
-                        const int64_t end = findEnd(*sig, fileStart);
+                        bool partial = false;
+                        const int64_t end = findEnd(*sig, fileStart, partial);
                         if (end > fileStart + 16) {
                             const CarvedInfo info = classify(*sig, fileStart, end);
                             const int64_t size = end - fileStart;
@@ -177,7 +187,9 @@ public:
                             const bool extAllowed =
                                 options_.allowedExtensions.empty() ||
                                 extensionAllowed(info.ext);
-                            if (size >= options_.minSize && kindAllowed && extAllowed) {
+                            const bool accepted =
+                                size >= options_.minSize && kindAllowed && extAllowed;
+                            if (accepted) {
                                 if (bytesWritten + size > options_.maxOutputBytes) {
                                     outputLimitHit = true;
                                     break;
@@ -189,19 +201,20 @@ public:
                                         ++filesWritten;
                                         bytesWritten += size;
                                         ++filesFound;
-                                        emitFound(info, size, fileStart, end, path);
+                                        emitFound(info, size, fileStart, end, path, partial);
                                     }
                                 } else {
                                     ++filesFound;
-                                    emitFound(info, size, fileStart, end, std::string());
+                                    emitFound(info, size, fileStart, end, std::string(),
+                                              partial);
                                 }
                                 if (filesFound >= options_.maxResults) break;
-                            }
-                            const int64_t next = std::max(end, offset + i + 1);
-                            if (next > offset) {
-                                offset = next;
-                                jumped = true;
-                                break;
+                                const int64_t next = std::max(end, offset + i + 1);
+                                if (next > offset) {
+                                    offset = next;
+                                    jumped = true;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -247,15 +260,17 @@ private:
     }
 
     void emitFound(const CarvedInfo& info, int64_t size, int64_t start, int64_t end,
-                   const std::string& path) {
+                   const std::string& path, bool partial) {
         if (!callbacks_.onFound) return;
         const std::string safeFormat = safeFormatName(info);
         std::string name = safeFormat + "_" + hexLower(start) + "_" +
                            hexLower(start / 1024) + "." + info.ext;
         const std::string id = "carve:" + std::to_string(start) + ":" + info.format + ":" +
                                std::to_string(end);
-        const int confidence = (info.format == "JPEG" || info.format == "PNG") ? 96 : 88;
-        const std::string detail = "Offset 0x" + hexLower(start) + " · " + info.format;
+        int confidence = (info.format == "JPEG" || info.format == "PNG") ? 96 : 88;
+        if (partial) confidence = std::max(40, confidence - 18);
+        std::string detail = "Offset 0x" + hexLower(start) + " · " + info.format;
+        if (partial) detail += " · partial (end marker missing)";
         callbacks_.onFound(id, name, info.kind, size, info.mime, confidence, start, detail,
                            info.format, path);
     }
@@ -320,57 +335,152 @@ private:
         return {sig.format, sig.ext, sig.mime, sig.kind};
     }
 
-    int64_t findEnd(const FileSignature& sig, int64_t start) {
+    int64_t findEnd(const FileSignature& sig, int64_t start, bool& partial) {
+        partial = false;
         const int64_t limit = std::min<int64_t>(sig.maxSize, options_.maxFileSize);
         int64_t cap = source_.length();
         if (start <= std::numeric_limits<int64_t>::max() - limit) {
             cap = std::min(cap, start + limit);
         }
         if (cap <= start) return -1;
+        int64_t end = -1;
+        bool jpegSawSos = false;
         switch (sig.endMode) {
             case EndMode::FOOTER:
-                if (!sig.hasFooter) return -1;
-                return findFooter(start + static_cast<int64_t>(sig.header.size()),
-                                  sig.footer, cap);
+                if (sig.hasFooter) {
+                    end = findFooter(start + static_cast<int64_t>(sig.header.size()),
+                                     sig.footer, cap);
+                }
+                break;
             case EndMode::JPEG_SCAN:
-                return parseJpeg(start, cap);
+                end = parseJpeg(start, cap, jpegSawSos);
+                break;
             case EndMode::RIFF: {
                 uint8_t head[4];
-                if (readFully(start + 4, head, 4) != 4) return -1;
-                const int64_t size = u32le(head, 0) + 8;
-                if (size >= 12 && size <= cap - start) return start + size;
-                return -1;
+                if (readFully(start + 4, head, 4) == 4) {
+                    const int64_t size = u32le(head, 0) + 8;
+                    if (size >= 12 && size <= cap - start) end = start + size;
+                }
+                break;
             }
             case EndMode::BMP_SIZE: {
                 uint8_t head[4];
-                if (readFully(start + 2, head, 4) != 4) return -1;
-                const int64_t size = u32le(head, 0);
-                if (size >= 26 && size <= cap - start) return start + size;
-                return -1;
+                if (readFully(start + 2, head, 4) == 4) {
+                    const int64_t size = u32le(head, 0);
+                    if (size >= 26 && size <= cap - start) end = start + size;
+                }
+                break;
             }
             case EndMode::MP4_BOX:
-                return parseBoxes(start, cap);
+                end = parseBoxes(start, cap);
+                break;
             case EndMode::ZIP_EOCD:
-                return findZipEnd(start, cap);
+                end = findZipEnd(start, cap);
+                break;
             case EndMode::PDF_EOF:
-                return findPdfEnd(start, cap);
+                end = findPdfEnd(start, cap);
+                break;
             case EndMode::MP3_FRAMES:
-                return parseMp3(start, cap);
+                end = parseMp3(start, cap);
+                break;
             case EndMode::OGG_PAGES:
-                return parseOgg(start, cap);
+                end = parseOgg(start, cap);
+                break;
             case EndMode::AMR_FRAMES:
-                return parseAmr(start, cap);
+                end = parseAmr(start, cap);
+                break;
             case EndMode::EBML:
-                return parseEbml(start, cap);
+                end = parseEbml(start, cap);
+                break;
             case EndMode::SQLITE:
-                return parseSqlite(start, cap);
+                end = parseSqlite(start, cap);
+                break;
+            case EndMode::TIFF_IFD:
+                end = parseTiff(start, cap);
+                break;
+            case EndMode::PSD_SIZE:
+                end = parsePsd(start, cap);
+                break;
+            case EndMode::ICO_SIZE:
+                end = parseIco(start, cap);
+                break;
+            case EndMode::FLV_TAGS:
+                end = parseFlv(start, cap);
+                break;
+            case EndMode::ASF_OBJECTS:
+                end = parseAsf(start, cap);
+                break;
+            case EndMode::TS_PACKETS:
+                end = parseTs(start, cap);
+                break;
+            case EndMode::ADTS_FRAMES:
+                end = parseAdts(start, cap);
+                break;
+            case EndMode::MIDI_TRACKS:
+                end = parseMidi(start, cap);
+                break;
             case EndMode::NEXT_SIGNATURE:
-                return findNextHeader(start + static_cast<int64_t>(sig.header.size()), cap);
+                end = findNextHeader(start + static_cast<int64_t>(sig.header.size()), cap);
+                break;
+        }
+        if (end > start + 16) return end;
+
+        // The end marker is gone (very common for deleted files whose tail was
+        // overwritten). Recover the readable prefix instead of dropping the file.
+        const int64_t fallback = bestEffortEnd(sig, start, cap, jpegSawSos);
+        if (fallback > start + 16) {
+            partial = true;
+            return fallback;
         }
         return -1;
     }
 
-    int64_t parseJpeg(int64_t start, int64_t cap) {
+    bool shouldAttemptPartial(const FileSignature& sig) const {
+        // "BM" is too weak a magic for false-positive-safe tail recovery.
+        return sig.format != "BMP";
+    }
+
+    bool allowsTailToCap(const FileSignature& sig, bool jpegSawSos) const {
+        if (sig.format == "JPEG") return jpegSawSos;
+        static const std::unordered_set<std::string> strong = {
+            "PNG", "MP4", "MOV", "3GP", "M4A", "HEIC", "AVI", "WAV", "WebP",
+            "SQLite", "Matroska", "TIFF", "CR2", "PSD", "FLV", "WMV",
+            "MPEG-TS", "MIDI",
+        };
+        return strong.find(sig.format) != strong.end();
+    }
+
+    int64_t partialCap(const FileSignature& sig, int64_t start, int64_t cap) const {
+        int64_t extra = 64LL * 1024 * 1024;
+        switch (sig.kind) {
+            case MediaKind::IMAGE: extra = 64LL * 1024 * 1024; break;
+            case MediaKind::VIDEO: extra = 512LL * 1024 * 1024; break;
+            case MediaKind::AUDIO: extra = 128LL * 1024 * 1024; break;
+            case MediaKind::DOCUMENT:
+            case MediaKind::ARCHIVE: extra = 256LL * 1024 * 1024; break;
+            default: break;
+        }
+        return std::min(cap, start + extra);
+    }
+
+    int64_t bestEffortEnd(const FileSignature& sig, int64_t start, int64_t cap,
+                          bool jpegSawSos) {
+        if (!shouldAttemptPartial(sig)) return -1;
+        if (cap - start < std::max<int64_t>(options_.minSize, 4096)) return -1;
+        const bool tail = allowsTailToCap(sig, jpegSawSos);
+        // NEXT_SIGNATURE already scanned the full window in findEnd; repeating it
+        // here would double the work on large footerless files.
+        if (!tail && sig.endMode == EndMode::NEXT_SIGNATURE) return -1;
+        const int64_t limit = tail ? partialCap(sig, start, cap) : cap;
+        const int64_t next =
+            findNextHeader(start + static_cast<int64_t>(sig.header.size()), limit);
+        if (next > start + 1024) return next;
+        if (tail) return limit;
+        return -1;
+    }
+
+    int64_t parseJpeg(int64_t start, int64_t cap, bool& sawSos) {
+        sawSos = false;
         int64_t p = start + 2;
         uint8_t marker[2];
         while (p + 2 <= cap) {
@@ -396,6 +506,7 @@ private:
             const int segLen = u16be(lenBytes, 0);
             if (segLen < 2) return -1;
             if (m == 0xDA) {
+                sawSos = true;
                 int64_t q = p + 2 + segLen;
                 std::vector<uint8_t> buf(static_cast<size_t>(CHUNK + 2));
                 while (q < cap) {
@@ -723,6 +834,321 @@ private:
         if (pageCount <= 0) return -1;
         const int64_t end = start + static_cast<int64_t>(pageSize) * pageCount;
         return end <= cap ? end : -1;
+    }
+
+    /**
+     * TIFF/NEF/ARW/DNG/CR2 all share the TIFF IFD layout. Walk the directory
+     * chain plus SubIFD/Exif pointers, and use the strip/tile offset + byte-count
+     * tables to find the true end of the image even when the file is huge.
+     */
+    int64_t parseTiff(int64_t start, int64_t cap) {
+        uint8_t head[8];
+        if (readFully(start, head, 8) < 8) return -1;
+        const bool little = u8(head, 0) == 0x49 && u8(head, 1) == 0x49;
+        const bool big = u8(head, 0) == 0x4D && u8(head, 1) == 0x4D;
+        if (!little && !big) return -1;
+        if ((little && (u8(head, 2) != 0x2A || u8(head, 3) != 0x00)) ||
+            (big && (u8(head, 2) != 0x00 || u8(head, 3) != 0x2A))) {
+            return -1;
+        }
+
+        auto rd16 = [little](const uint8_t* b) -> int {
+            return little ? (u8(b, 0) | (u8(b, 1) << 8)) : ((u8(b, 0) << 8) | u8(b, 1));
+        };
+        auto rd32 = [little](const uint8_t* b) -> int64_t {
+            return little ? u32le(b, 0) : u32be(b, 0);
+        };
+
+        std::vector<int64_t> pending;
+        pending.push_back(rd32(head + 4));
+        std::unordered_set<int64_t> visited;
+        int64_t best = start + 8;
+        int processed = 0;
+
+        while (!pending.empty() && processed++ < 2048) {
+            const int64_t ifd = pending.back();
+            pending.pop_back();
+            if (ifd < 8 || !visited.insert(ifd).second) continue;
+            const int64_t dirPos = start + ifd;
+            if (dirPos + 2 > cap) continue;
+            uint8_t countBytes[2];
+            if (readFully(dirPos, countBytes, 2) < 2) continue;
+            const int count = rd16(countBytes);
+            if (count <= 0 || count > 4096) continue;
+            const int64_t entriesLen = static_cast<int64_t>(count) * 12;
+            if (dirPos + 2 + entriesLen + 4 > cap) continue;
+            std::vector<uint8_t> entries(static_cast<size_t>(entriesLen + 4));
+            if (readFully(dirPos + 2, entries.data(), static_cast<int>(entries.size())) <
+                static_cast<int>(entries.size())) {
+                continue;
+            }
+
+            std::vector<int64_t> stripOffsets;
+            std::vector<int64_t> stripCounts;
+            for (int e = 0; e < count; ++e) {
+                const uint8_t* entry = entries.data() + e * 12;
+                const int tag = rd16(entry);
+                const int type = rd16(entry + 2);
+                const int64_t itemCount = rd32(entry + 4);
+                if (itemCount <= 0 || itemCount > 100000) continue;
+                int typeSize = 0;
+                switch (type) {
+                    case 1: case 2: case 6: case 7: typeSize = 1; break;
+                    case 3: case 8: typeSize = 2; break;
+                    case 4: case 9: case 11: typeSize = 4; break;
+                    case 5: case 10: case 12: typeSize = 8; break;
+                    default: continue;
+                }
+                const int64_t total = itemCount * typeSize;
+                const bool offsetTag = tag == 273 || tag == 324;
+                const bool countTag = tag == 279 || tag == 325;
+                if (total <= 4) {
+                    if (offsetTag || countTag) {
+                        const int64_t value =
+                            typeSize == 2 ? static_cast<int64_t>(rd16(entry + 8))
+                                          : rd32(entry + 8);
+                        if (offsetTag) {
+                            stripOffsets.push_back(value);
+                        } else {
+                            stripCounts.push_back(value);
+                        }
+                    }
+                    continue;
+                }
+                const int64_t dataOffset = rd32(entry + 8);
+                if (dataOffset <= 0) continue;
+
+                if (tag == 330 || tag == 34665 || tag == 34853 || tag == 40965) {
+                    const int64_t childPos = start + dataOffset;
+                    if (childPos + 4 <= cap) {
+                        uint8_t child[4];
+                        if (readFully(childPos, child, 4) == 4) {
+                            pending.push_back(rd32(child));
+                        }
+                    }
+                }
+
+                if (offsetTag || countTag) {
+                    const int64_t tableBytes = std::min<int64_t>(total, 8 * 1024 * 1024);
+                    const int64_t tablePos = start + dataOffset;
+                    if (tablePos + tableBytes > cap) continue;
+                    const int entriesToRead =
+                        static_cast<int>(tableBytes / typeSize);
+                    std::vector<uint8_t> table(static_cast<size_t>(tableBytes));
+                    if (readFully(tablePos, table.data(), static_cast<int>(tableBytes)) <
+                        static_cast<int>(tableBytes)) {
+                        continue;
+                    }
+                    for (int k = 0; k < entriesToRead; ++k) {
+                        const uint8_t* item = table.data() + k * typeSize;
+                        const int64_t value =
+                            typeSize == 2 ? static_cast<int64_t>(rd16(item))
+                                          : rd32(item);
+                        if (tag == 273 || tag == 324) {
+                            stripOffsets.push_back(value);
+                        } else {
+                            stripCounts.push_back(value);
+                        }
+                    }
+                    continue;
+                }
+
+                const int64_t dataEnd = start + dataOffset + total;
+                if (dataEnd > best && dataEnd <= cap) best = dataEnd;
+            }
+
+            const size_t pairs = std::min(stripOffsets.size(), stripCounts.size());
+            for (size_t k = 0; k < pairs; ++k) {
+                if (stripOffsets[k] <= 0 || stripCounts[k] <= 0) continue;
+                const int64_t dataEnd = start + stripOffsets[k] + stripCounts[k];
+                if (dataEnd > best && dataEnd <= cap) best = dataEnd;
+            }
+
+            pending.push_back(rd32(entries.data() + entriesLen));
+        }
+        return best > start + 16 ? best : -1;
+    }
+
+    int64_t parsePsd(int64_t start, int64_t cap) {
+        uint8_t head[26];
+        if (readFully(start, head, 26) < 26) return -1;
+        if (ascii(head, 0, 4, 26) != "8BPS") return -1;
+        int64_t p = start + 26;
+        for (int section = 0; section < 4; ++section) {
+            uint8_t lenBytes[4];
+            if (p + 4 > cap) return -1;
+            if (readFully(p, lenBytes, 4) < 4) return -1;
+            const int64_t len = u32be(lenBytes, 0);
+            p += 4;
+            if (len < 0 || p + len > cap) return -1;
+            p += len;
+        }
+        return p > start + 26 ? p : -1;
+    }
+
+    int64_t parseIco(int64_t start, int64_t cap) {
+        uint8_t head[6];
+        if (readFully(start, head, 6) < 6) return -1;
+        const int count = static_cast<int>(u32le(head, 4) & 0xFFFF);
+        if (count <= 0 || count > 1024) return -1;
+        const int64_t dirLen = static_cast<int64_t>(count) * 16;
+        if (start + 6 + dirLen > cap) return -1;
+        std::vector<uint8_t> dir(static_cast<size_t>(dirLen));
+        if (readFully(start + 6, dir.data(), static_cast<int>(dirLen)) <
+            static_cast<int>(dirLen)) {
+            return -1;
+        }
+        int64_t end = start + 6 + dirLen;
+        for (int e = 0; e < count; ++e) {
+            const uint8_t* entry = dir.data() + e * 16;
+            const int64_t size = u32le(entry, 8);
+            const int64_t offset = u32le(entry, 12);
+            if (size <= 0 || offset <= 0) continue;
+            const int64_t itemEnd = start + offset + size;
+            if (itemEnd <= cap && itemEnd > end) end = itemEnd;
+        }
+        return end > start + 16 ? end : -1;
+    }
+
+    int64_t parseFlv(int64_t start, int64_t cap) {
+        uint8_t head[13];
+        if (readFully(start, head, 13) < 13) return -1;
+        if (ascii(head, 0, 3, 13) != "FLV") return -1;
+        const int64_t dataOffset = u32be(head, 5);
+        if (dataOffset < 9 || dataOffset > 4096) return -1;
+        int64_t p = start + dataOffset + 4;
+        int64_t last = p;
+        int guard = 0;
+        while (p + 11 <= cap && guard++ < 4000000) {
+            if (isCancelled()) return last > start + 16 ? last : -1;
+            uint8_t th[11];
+            if (readFully(p, th, 11) < 11) break;
+            const int type = u8(th, 0);
+            if (type != 8 && type != 9 && type != 18) break;
+            const int64_t dataSize = (static_cast<int64_t>(u8(th, 1)) << 16) |
+                                     (static_cast<int64_t>(u8(th, 2)) << 8) |
+                                     static_cast<int64_t>(u8(th, 3));
+            const int64_t tagEnd = p + 11 + dataSize + 4;
+            if (tagEnd > cap) break;
+            last = tagEnd;
+            p = tagEnd;
+        }
+        return last > start + 16 ? last : -1;
+    }
+
+    int64_t parseAsf(int64_t start, int64_t cap) {
+        uint8_t head[24];
+        if (readFully(start, head, 24) < 24) return -1;
+        const int64_t headerSize = u64le(head, 16);
+        if (headerSize < 30 || headerSize > cap - start) return -1;
+        const int64_t dataPos = start + headerSize;
+        if (dataPos + 24 > cap) return dataPos > start + 16 ? dataPos : -1;
+        uint8_t dataHead[24];
+        if (readFully(dataPos, dataHead, 24) < 24) {
+            return dataPos > start + 16 ? dataPos : -1;
+        }
+        static const uint8_t kDataGuid[16] = {
+            0x36, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
+            0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C,
+        };
+        const bool isData = std::memcmp(dataHead, kDataGuid, 16) == 0;
+        const int64_t dataSize = u64le(dataHead, 16);
+        if (isData && dataSize >= 24 && dataPos + dataSize <= cap) {
+            return dataPos + dataSize;
+        }
+        return dataPos > start + 16 ? dataPos : -1;
+    }
+
+    int64_t parseTs(int64_t start, int64_t cap) {
+        int packet = 188;
+        auto syncAt = [this](int64_t pos) {
+            uint8_t b = 0;
+            return readFully(pos, &b, 1) == 1 && b == 0x47;
+        };
+        if (!(syncAt(start + 188) && syncAt(start + 376))) {
+            if (syncAt(start + 192) && syncAt(start + 384)) {
+                packet = 192;
+            } else if (syncAt(start + 204) && syncAt(start + 408)) {
+                packet = 204;
+            }
+        }
+        const int chunk = 256 * 1024;
+        std::vector<uint8_t> buf(static_cast<size_t>(chunk));
+        int64_t pos = start;
+        int64_t last = start;
+        int misses = 0;
+        while (pos < cap) {
+            if (isCancelled()) return last > start + packet * 3 ? last : -1;
+            const int want = static_cast<int>(std::min<int64_t>(chunk, cap - pos));
+            const int n = readFully(pos, buf.data(), want);
+            if (n < packet) break;
+            int i = 0;
+            int64_t chunkLast = last;
+            while (i + packet <= n) {
+                if (buf[static_cast<size_t>(i)] != 0x47) {
+                    if (++misses > 2) break;
+                    ++i;
+                    continue;
+                }
+                misses = 0;
+                i += packet;
+                chunkLast = pos + i;
+            }
+            if (misses > 2) {
+                if (chunkLast > last) last = chunkLast;
+                break;
+            }
+            if (chunkLast > last) {
+                last = chunkLast;
+                pos = last;
+            } else {
+                const int advance = n - (n % packet);
+                if (advance <= 0) break;
+                pos += advance;
+            }
+        }
+        return last > start + packet * 3 ? last : -1;
+    }
+
+    int64_t parseAdts(int64_t start, int64_t cap) {
+        int64_t p = start;
+        int64_t last = -1;
+        int frames = 0;
+        while (p + 7 <= cap) {
+            if (isCancelled()) return frames >= 2 ? last : -1;
+            uint8_t h[7];
+            if (readFully(p, h, 7) < 7) break;
+            if (u8(h, 0) != 0xFF || (u8(h, 1) & 0xF6) != 0xF0) break;
+            const int frameLen = ((u8(h, 3) & 0x03) << 11) |
+                                 (u8(h, 4) << 3) | (u8(h, 5) >> 5);
+            if (frameLen < 7 || p + frameLen > cap) break;
+            p += frameLen;
+            last = p;
+            ++frames;
+        }
+        return (frames >= 2 && last > 0) ? last : -1;
+    }
+
+    int64_t parseMidi(int64_t start, int64_t cap) {
+        uint8_t head[8];
+        if (readFully(start, head, 8) < 8) return -1;
+        if (ascii(head, 0, 4, 8) != "MThd") return -1;
+        const int64_t headerLen = u32be(head, 4);
+        if (headerLen < 6 || start + 8 + headerLen > cap) return -1;
+        int64_t p = start + 8 + headerLen;
+        int64_t last = p;
+        int guard = 0;
+        while (p + 8 <= cap && guard++ < 200000) {
+            if (isCancelled()) return last > start + 16 ? last : -1;
+            uint8_t ch[8];
+            if (readFully(p, ch, 8) < 8) break;
+            if (ascii(ch, 0, 4, 8) != "MTrk") break;
+            const int64_t len = u32be(ch, 4);
+            if (len < 0 || p + 8 + len > cap) break;
+            p += 8 + len;
+            last = p;
+        }
+        return last > start + 16 ? last : -1;
     }
 
     int64_t findNextHeader(int64_t from, int64_t maxEnd) {

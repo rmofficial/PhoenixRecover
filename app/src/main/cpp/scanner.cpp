@@ -28,12 +28,19 @@ const std::unordered_set<std::string> TRASH_SEGMENTS = {
 
 const std::unordered_set<std::string> SKIP_DIRS = {
     "obb", ".git", "node_modules", "__pycache__", "com.phoenix.recover",
-    "lost+found", ".thumbnails", "thumbnails",
+    "lost+found",
+};
+
+// Cache/binary folders inside Android/data and Android/media. Skipping these keeps
+// the new Android-tree traversal fast without hiding app trash folders.
+const std::unordered_set<std::string> ANDROID_APP_SKIP = {
+    "cache", "code_cache", "no_backup", "lib", "oat", "app_webview",
 };
 
 const std::vector<std::string> KNOWN_RELATIVE = {
     ".trashed",
     ".Trash",
+    ".Trash-1000",
     ".trash",
     ".trashes",
     ".recycle",
@@ -49,6 +56,7 @@ const std::vector<std::string> KNOWN_RELATIVE = {
     "Pictures/.trash",
     "Pictures/Trash",
     "Pictures/Recently Deleted",
+    "Pictures/.thumbnails",
     "Movies/.trashed",
     "Movies/.trash",
     "Movies/Trash",
@@ -58,27 +66,64 @@ const std::vector<std::string> KNOWN_RELATIVE = {
     "DCIM/Trash",
     "DCIM/.trashes",
     "DCIM/Recently Deleted",
+    "DCIM/.thumbnails",
     "Download/.trashed",
     "Download/Trash",
     "MIUI/Gallery/cloud/.trashBin",
     "MIUI/Gallery/.trashBin",
     "MIUI/Gallery/.trash",
+    "MIUI/Gallery/cloud/.trash",
+    "WhatsApp/Media/.Trashed",
+    "WhatsApp/Media/.trash",
+    "WhatsApp/Media/.Statuses",
+    "Android/media/com.whatsapp/WhatsApp/Media/.Trashed",
+    "Android/media/com.whatsapp/WhatsApp/Media/.trash",
     "Android/media/com.whatsapp/WhatsApp/Media/.Statuses",
+    "Android/data/com.whatsapp/WhatsApp/Media/.Trashed",
+    "Android/data/com.whatsapp/WhatsApp/Media/.trash",
     "Android/data/com.whatsapp/WhatsApp/Media/.Statuses",
     "Android/media/org.telegram.messenger/Telegram/Telegram Images",
+    "Android/media/org.telegram.messenger/Telegram/Telegram Video",
+    "Android/media/org.telegram.messenger/Telegram/Telegram Documents",
+    "Android/media/org.telegram.messenger/Telegram/Telegram Audio",
+    "Android/media/org.telegram.messenger/Telegram/Telegram Voice",
+    "Android/media/org.telegram.messenger/Telegram/Telegram Animated",
+    "Android/data/com.google.android.apps.photos/files/trash",
+    "Android/data/com.google.android.apps.photos/files/trash/trash",
+    "Android/data/com.google.android.apps.photos/files/restore",
+    "Android/data/com.google.android.apps.photos/cache/trash",
+    "Android/data/com.sec.android.gallery3d/files/Trash",
+    "Android/data/com.sec.android.gallery3d/cache",
+    "Android/data/com.miui.gallery/files/trash",
+    "Android/data/com.coloros.gallery3d/files/Trash",
+    "Android/data/com.oppo.gallery3d/files/Trash",
+    "Android/data/com.vivo.gallery/files/Trash",
+    "Android/data/com.instagram.android/files/trash",
+    "Android/data/com.facebook.katana/cache/image",
+    "Android/data/com.snapchat.android/cache",
+    "Android/media/com.instagram.android",
+    "Android/media/com.google.android.apps.photos",
+    "Android/media/com.sec.android.gallery3d",
+    "Android/data/org.telegram.messenger/cache",
+    "Android/data/org.telegram.messenger/files",
+    "Android/data/org.telegram.plus/cache",
+    "Android/data/org.thoughtcrime.securesms/cache",
 };
 
 const std::unordered_set<std::string>& candidateExtensions() {
     static const std::unordered_set<std::string> value = {
         "jpg", "jpeg", "jfif", "png", "gif", "webp", "bmp", "heic", "heif",
         "avif", "tif", "tiff", "dng", "raw", "cr2", "nef", "arw", "orf", "rw2",
+        "psd", "psb", "ico", "cur", "svg", "jxl",
         "mp4", "mov", "3gp", "mkv", "webm", "avi", "m4v", "flv", "wmv", "ts",
-        "mpg", "mpeg",
+        "mpg", "mpeg", "asf", "mts", "m2ts", "vob", "rmvb", "divx",
         "mp3", "wav", "flac", "ogg", "oga", "amr", "m4a", "aac", "opus", "wma",
-        "mid",
+        "mid", "midi", "m4b", "m4r", "aiff", "aif", "ape", "ac3",
         "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf",
-        "db", "sqlite", "json", "xml",
-        "zip", "rar", "7z", "apk", "tar", "gz", "iso", "jar",
+        "db", "sqlite", "json", "xml", "html", "htm", "epub", "odt", "ods",
+        "odp", "md", "log",
+        "zip", "rar", "7z", "apk", "tar", "gz", "iso", "jar", "bz2", "xz", "tgz",
+        "tbz2", "zst", "cab",
     };
     return value;
 }
@@ -86,17 +131,6 @@ const std::unordered_set<std::string>& candidateExtensions() {
 std::string lower(std::string value) {
     for (char& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return value;
-}
-
-bool iequals(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
-        }
-    }
-    return true;
 }
 
 bool startsWith(const std::string& value, const std::string& prefix) {
@@ -146,6 +180,32 @@ std::string trimTrailingSlash(const std::string& value) {
     std::string out = value;
     while (out.size() > 1 && out.back() == '/') out.pop_back();
     return out;
+}
+
+std::string baseName(const std::string& path) {
+    const std::string trimmed = trimTrailingSlash(path);
+    const size_t slash = trimmed.find_last_of('/');
+    return slash == std::string::npos ? trimmed : trimmed.substr(slash + 1);
+}
+
+bool isAndroidAppTree(const std::string& path) {
+    const std::string lowerPath = lower(path);
+    return contains(lowerPath, "/android/media/") || contains(lowerPath, "/android/data/");
+}
+
+/**
+ * The `Android` tree used to be skipped entirely, which hid WhatsApp/Telegram
+ * deleted media under `Android/media/<app>/.Trashed`. Descend into it but only
+ * through `media` and `data`, pruning cache/binary folders.
+ */
+bool shouldDescend(const std::string& parent, const std::string& name, bool insideAndroidApp) {
+    const std::string lowerName = lower(name);
+    if (SKIP_DIRS.find(lowerName) != SKIP_DIRS.end()) return false;
+    if (lowerName == "android") return true;
+    const std::string parentName = lower(baseName(parent));
+    if (parentName == "android") return lowerName == "media" || lowerName == "data";
+    if (insideAndroidApp && ANDROID_APP_SKIP.find(lowerName) != ANDROID_APP_SKIP.end()) return false;
+    return true;
 }
 
 bool pathExists(const std::string& path) {
@@ -260,6 +320,7 @@ public:
                 continue;
             }
             ++dirsVisited;
+            const bool insideAndroidApp = isAndroidAppTree(dir);
 
             struct dirent* entry = nullptr;
             while ((entry = ::readdir(handle)) != nullptr) {
@@ -278,8 +339,7 @@ public:
                 const bool statOk = ::stat(child.c_str(), &st) == 0;
                 if (statOk && S_ISDIR(st.st_mode)) {
                     if (current.depth < options_.maxDepth &&
-                        SKIP_DIRS.find(name) == SKIP_DIRS.end() &&
-                        !iequals(name, "Android")) {
+                        shouldDescend(dir, name, insideAndroidApp)) {
                         queue.push_back({child, current.depth + 1});
                     }
                     continue;

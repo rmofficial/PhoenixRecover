@@ -46,6 +46,14 @@ enum class EndMode {
     AMR_FRAMES,
     EBML,
     SQLITE,
+    TIFF_IFD,
+    PSD_SIZE,
+    ICO_SIZE,
+    FLV_TAGS,
+    ASF_OBJECTS,
+    TS_PACKETS,
+    ADTS_FRAMES,
+    MIDI_TRACKS,
     NEXT_SIGNATURE,
 };
 
@@ -56,6 +64,16 @@ enum class Validator {
     AVI,
     WAV,
     OGG,
+    TIFF,
+    PSD,
+    ICO,
+    FLV,
+    ASF,
+    TS,
+    ADTS,
+    MIDI,
+    BZIP2,
+    RTF,
 };
 
 struct FileSignature {

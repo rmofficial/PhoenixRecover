@@ -80,6 +80,33 @@ object StorageUtil {
         }
     }
 
+    /**
+     * Media read permissions used by limited mode. Without all-files access these are
+     * what still lets MediaStore (including its trash bin) return rows on Android 13+.
+     */
+    fun mediaPermissions(): List<String> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val permissions = mutableListOf(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_AUDIO,
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                permissions += Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
+            }
+            return permissions
+        }
+        return listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+
+    fun hasMediaAccess(context: Context): Boolean {
+        val permissions = mediaPermissions()
+        if (permissions.isEmpty()) return true
+        return permissions.any {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
     fun allFilesIntent(context: Context): Intent {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Intent(

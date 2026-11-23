@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import java.io.File
 import java.util.Locale
 
 /**
@@ -56,6 +57,7 @@ object MediaStoreTrash {
                 },
             )
             for (collection in collections) {
+                val beforeCollection = out.size
                 for (args in variants) {
                     val before = out.size
                     try {
@@ -66,6 +68,21 @@ object MediaStoreTrash {
                         // Provider rejected this query shape — try the next variant.
                     }
                     if (out.size > before) break
+                }
+                // Some OEM providers reject the Bundle query args but still accept the
+                // legacy selection form. Fall back to it before giving up on this table.
+                if (out.size == beforeCollection) {
+                    try {
+                        resolver.query(
+                            collection,
+                            projection,
+                            "${MediaStore.MediaColumns.IS_TRASHED} = 1",
+                            null,
+                            "${MediaStore.MediaColumns.DATE_MODIFIED} DESC",
+                        )?.use { cursor -> readRows(cursor, collection, volume, out) }
+                    } catch (_: Exception) {
+                        // Table unavailable — move on.
+                    }
                 }
             }
         }
@@ -94,13 +111,20 @@ object MediaStoreTrash {
             val detected = Sniffer.fromName(displayName)
                 ?: mime?.let { detectedFromMime(it, displayName) }
                 ?: continue
-            if (size <= 0) continue
+            // The SIZE column is often 0 for trashed rows even though the underlying
+            // file is intact, so fall back to the real file length before dropping it.
+            val effectiveSize = when {
+                size > 0L -> size
+                data != null -> runCatching { File(data).length() }.getOrDefault(0L)
+                else -> 0L
+            }
+            if (effectiveSize <= 0L) continue
             val uri = android.content.ContentUris.withAppendedId(collection, id).toString()
             val file = RecoveredFile(
                 id = "trash:media:$volume:$id",
                 name = displayName,
                 kind = detected.kind,
-                size = size,
+                size = effectiveSize,
                 origin = Origin.TRASH,
                 mime = mime ?: detected.mime,
                 confidence = 98,

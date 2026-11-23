@@ -237,4 +237,108 @@ class CarverTest {
         carve(out.toByteArray(), CarveOptions(minSize = 1024 * 1024))
         assertTrue(found.isEmpty())
     }
+
+    private fun tiff(): ByteArray {
+        val out = ByteArray(564)
+        // Little-endian TIFF header pointing at IFD0 (offset 8).
+        byteArrayOf(0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00).copyInto(out, 0)
+        out[8] = 0x02; out[9] = 0x00 // two directory entries
+        fun entry(pos: Int, tag: Int, value: Int) {
+            out[pos] = (tag and 0xFF).toByte()
+            out[pos + 1] = ((tag shr 8) and 0xFF).toByte()
+            out[pos + 2] = 0x04 // LONG
+            out[pos + 4] = 0x01 // count = 1
+            out[pos + 8] = (value and 0xFF).toByte()
+            out[pos + 9] = ((value shr 8) and 0xFF).toByte()
+            out[pos + 10] = ((value shr 16) and 0xFF).toByte()
+            out[pos + 11] = ((value shr 24) and 0xFF).toByte()
+        }
+        entry(10, 273, 64) // StripOffsets -> pixel data at 64
+        entry(22, 279, 500) // StripByteCounts -> 500 bytes
+        for (k in 64 until out.size) out[k] = 0x33
+        return out
+    }
+
+    private fun psd(): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write("8BPS".toByteArray())
+        out.write(byteArrayOf(0x00, 0x01))
+        out.write(ByteArray(6))
+        out.write(byteArrayOf(0x00, 0x03)) // channels
+        out.write(byteArrayOf(0x00, 0x00, 0x00, 0x10)) // height
+        out.write(byteArrayOf(0x00, 0x00, 0x00, 0x10)) // width
+        out.write(byteArrayOf(0x00, 0x08, 0x00, 0x03)) // depth, color mode
+        out.write(ByteArray(12)) // empty color mode / resources / layers
+        out.write(byteArrayOf(0x00, 0x00, 0x00, 0x20)) // image data length
+        out.write(ByteArray(32) { 0x44 })
+        return out.toByteArray()
+    }
+
+    private fun flv(): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write("FLV".toByteArray())
+        out.write(byteArrayOf(0x01, 0x00))
+        out.write(byteArrayOf(0x00, 0x00, 0x00, 0x09))
+        out.write(ByteArray(4)) // PreviousTagSize0
+        out.write(byteArrayOf(0x09, 0x00, 0x00, 0x10)) // video tag, 16 bytes
+        out.write(ByteArray(7)) // timestamp + stream id
+        out.write(ByteArray(16) { 0x55 })
+        out.write(byteArrayOf(0x00, 0x00, 0x00, 0x1B))
+        return out.toByteArray()
+    }
+
+    @Test
+    fun carvesTiffUsingStripTables() {
+        val out = ByteArrayOutputStream()
+        repeat(700) { out.write(0x5A) }
+        val start = out.size().toLong()
+        out.write(tiff())
+        repeat(700) { out.write(0x5A) }
+
+        carve(out.toByteArray(), CarveOptions(minSize = 8))
+
+        val item = found.firstOrNull { it.format == "TIFF" }
+        assertNotNull("TIFF not carved", item)
+        assertEquals(start, item!!.offset)
+        assertEquals(564L, item.size)
+    }
+
+    @Test
+    fun carvesPsdAndFlv() {
+        val out = ByteArrayOutputStream()
+        repeat(400) { out.write(0x5A) }
+        out.write(psd())
+        repeat(400) { out.write(0x5A) }
+        out.write(flv())
+        repeat(400) { out.write(0x5A) }
+
+        carve(out.toByteArray(), CarveOptions(minSize = 8))
+
+        val psd = found.firstOrNull { it.format == "PSD" }
+        assertNotNull("PSD not carved", psd)
+        assertEquals(74L, psd!!.size)
+        val flv = found.firstOrNull { it.format == "FLV" }
+        assertNotNull("FLV not carved", flv)
+        assertEquals(44L, flv!!.size)
+    }
+
+    @Test
+    fun recoversJpegPrefixWhenEndMarkerIsMissing() {
+        val jpeg = jpeg().let { it.copyOf(it.size - 2) } // strip EOI
+        val out = ByteArrayOutputStream()
+        repeat(1234) { out.write(0x5A) }
+        val start = out.size().toLong()
+        out.write(jpeg)
+        repeat(6000) { out.write(0x22) }
+        val total = out.size().toLong()
+
+        carve(out.toByteArray(), CarveOptions(minSize = 8))
+
+        val item = found.firstOrNull { it.format == "JPEG" }
+        assertNotNull("partial JPEG not recovered", item)
+        assertEquals(start, item!!.offset)
+        assertEquals(total - start, item.size)
+        assertTrue(item.partial)
+        assertTrue(item.detail.contains("partial"))
+    }
 }

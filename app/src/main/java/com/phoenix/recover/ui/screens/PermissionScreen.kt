@@ -2,6 +2,7 @@ package com.phoenix.recover.ui.screens
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -37,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.phoenix.recover.RecoverViewModel
 import com.phoenix.recover.ui.components.GhostButton
 import com.phoenix.recover.ui.components.GradientButton
@@ -131,7 +133,17 @@ fun PermissionScreen(vm: RecoverViewModel) {
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 10.dp),
         )
         Spacer(Modifier.height(10.dp))
-        Column(
+    fun exploreLimited() {
+        val missing = StorageUtil.mediaPermissions().filter {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            launcher.launch(missing.toTypedArray())
+        }
+        vm.dismissPermission()
+    }
+
+    Column(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(22.dp))
@@ -149,7 +161,7 @@ fun PermissionScreen(vm: RecoverViewModel) {
         Spacer(Modifier.height(18.dp))
         GradientButton("Grant all-files access", Modifier.fillMaxWidth(), onClick = { requestAccess() })
         Spacer(Modifier.height(10.dp))
-        GhostButton("Explore limited mode", Modifier.fillMaxWidth()) { vm.dismissPermission() }
+        GhostButton("Explore limited mode", Modifier.fillMaxWidth()) { exploreLimited() }
         Spacer(Modifier.height(10.dp))
         Text(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {

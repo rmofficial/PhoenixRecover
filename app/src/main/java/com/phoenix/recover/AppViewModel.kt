@@ -153,9 +153,15 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         if (!snapshot.hasAccess) {
-            toast("Enable All files access to scan storage")
-            _state.update { it.copy(permissionDismissed = false) }
-            return
+            // Limited mode still scans whatever is readable, and the MediaStore trash
+            // query can succeed with media permissions alone — never block the scan.
+            toast(
+                if (StorageUtil.hasMediaAccess(context)) {
+                    "Limited scan — media only. Grant All files access for full results"
+                } else {
+                    "Limited scan — grant All files access for full results"
+                },
+            )
         }
         scanCancelled.set(false)
         resultsMap.clear()
@@ -580,6 +586,7 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             var done = 0
+            var failed = 0
             val saved = withContext(Dispatchers.IO) {
                 val list = mutableListOf<SavedItem>()
                 var lastUpdate = 0L
@@ -593,7 +600,7 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
                             }
                         }
                     }
-                    if (result != null) list += result
+                    if (result != null) list += result else failed++
                     done++
                     _state.update {
                         it.copy(recoverText = "Recovered $done/${items.size} files…")
@@ -610,10 +617,10 @@ class RecoverViewModel(app: Application) : AndroidViewModel(app) {
             }
             goTab(Screen.VAULT)
             saveRecovered()
-            if (saved.isEmpty()) {
-                toast("Recovery failed — the source may be unavailable")
-            } else {
-                toast("Recovered ${saved.size} file(s) to Downloads/Phoenix Recover")
+            when {
+                saved.isEmpty() -> toast("Recovery failed — the source may be unavailable")
+                failed > 0 -> toast("Recovered ${saved.size} file(s) · $failed failed — try again")
+                else -> toast("Recovered ${saved.size} file(s) to Downloads/Phoenix Recover")
             }
         }
     }
